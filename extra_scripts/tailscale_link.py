@@ -1,4 +1,4 @@
-"""Link the tailscale-rs static archive into the native Tailscale build.
+"""Link the tailscale-rs static archive into a Tailscale-enabled build.
 
 The archive cannot simply be listed in `build_flags`: PlatformIO runs those
 through SCons' ParseFlags, which classifies anything ending in `.a` as a LIBS
@@ -19,22 +19,44 @@ Import("env")
 
 project_dir = env.subst("$PROJECT_DIR")
 ts_root = os.environ.get("TAILSCALE_RS_DIR") or os.path.join(project_dir, "..", "tailscale-rs-0.6.1")
-archive = os.path.normpath(os.path.join(ts_root, "target", "release", "libtailscalers.a"))
+
+# Cargo puts a cross-compiled build under target/<triple>/, and a host build
+# straight under target/. Pick by the Rust target this PlatformIO env needs, so
+# an ESP32 env can never silently link the macOS archive (which would fail with
+# a wall of unhelpful architecture errors rather than saying what was wrong).
+rust_target = env.GetProjectOption("custom_tailscale_rust_target", "")
+if rust_target:
+    out_dir = os.path.join(ts_root, "target", rust_target, "release")
+    build_hint = "--target %s -Zbuild-std=std,panic_abort" % rust_target
+    toolchain_hint = "RUSTUP_TOOLCHAIN=esp "
+else:
+    out_dir = os.path.join(ts_root, "target", "release")
+    build_hint = ""
+    toolchain_hint = ""
+
+archive = os.path.normpath(os.path.join(out_dir, "libtailscalers.a"))
 
 if not os.path.isfile(archive):
     raise SystemExit(
         "tailscale: %s not found.\n"
         "Build the Rust side first:\n"
-        "    cd %s && cargo build -p ts_ffi --release\n"
-        "Or point TAILSCALE_RS_DIR at the tailscale-rs checkout." % (archive, os.path.normpath(ts_root))
+        "    cd %s && %scargo build -p ts_ffi --release %s\n"
+        "Or point TAILSCALE_RS_DIR at the tailscale-rs checkout."
+        % (archive, os.path.normpath(ts_root), toolchain_hint, build_hint)
     )
 
-env.Append(LINKFLAGS=[archive])
+print("tailscale: linking %s" % archive)
 
-# LINKFLAGS is an opaque value to SCons, not a file dependency, so changing the
-# archive does NOT invalidate the link by itself. Without this the build happily
-# reports SUCCESS while linking a stale libtailscalers.a -- which bit us once:
-# a Rust rebuild that cut 4.9MB off the archive produced a byte-identical
-# firmware until the binary was deleted by hand. Declare the dependency so a
-# `cargo build` is enough to force a relink.
+# Goes in LIBS, not LINKFLAGS. SCons emits LINKFLAGS *before* the object files,
+# and GNU ld resolves a static archive only against references it has already
+# seen -- so an archive placed first contributes nothing and every ts_* symbol
+# comes back undefined. (Apple's ld is order-insensitive here, which is why the
+# native build worked with LINKFLAGS and hid this.) LIBS lands after the
+# objects, where GNU ld can actually use it.
+env.Append(LIBS=[env.File(archive)])
+
+# LIBS entries are tracked by SCons, but be explicit anyway: this dependency is
+# what forces a relink when only the Rust side changed. Without it the build
+# once reported SUCCESS while linking a stale libtailscalers.a -- a Rust rebuild
+# that cut 4.9MB off the archive produced a byte-identical firmware.
 env.Depends("$BUILD_DIR/${PROGNAME}$PROGSUFFIX", archive)

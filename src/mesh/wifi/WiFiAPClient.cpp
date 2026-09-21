@@ -7,6 +7,9 @@
 
 #include "main.h"
 #include "mesh/api/WiFiServerAPI.h"
+#ifdef MESHTASTIC_TAILSCALE
+#include "mesh/api/TailscaleServerAPI.h"
+#endif
 #include "target_specific.h"
 #include <WiFi.h>
 
@@ -209,6 +212,13 @@ static void onNetworkConnected()
         if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
             initApiServer();
         }
+#endif
+#ifdef MESHTASTIC_TAILSCALE
+        // Started from here rather than setup(): joining a tailnet needs the
+        // network already up, and on ESP32 WiFi association is asynchronous.
+        // The join itself runs on its own thread, so this returns immediately.
+        // Idempotent, which matters because this path can run more than once.
+        initTailscaleApiServer();
 #endif
         APStartupComplete = true;
     }
