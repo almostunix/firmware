@@ -3,12 +3,58 @@
 #ifdef MESHTASTIC_TAILSCALE
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <thread>
 #include <vector>
 
 namespace tailscale_shim
 {
+
+namespace
+{
+std::mutex gLogMutex;
+std::deque<std::pair<LogLevel, std::string>> gLogQueue;
+/// Bound the queue: a wedged scheduler must not let workers grow it forever.
+constexpr size_t TS_LOG_QUEUE_LIMIT = 64;
+} // namespace
+
+void deferLog(LogLevel level, const char *format, ...)
+{
+    char buf[256];
+    va_list ap;
+    va_start(ap, format);
+    vsnprintf(buf, sizeof(buf), format, ap);
+    va_end(ap);
+
+    std::lock_guard<std::mutex> lock(gLogMutex);
+    if (gLogQueue.size() >= TS_LOG_QUEUE_LIMIT)
+        return; // drop the newest rather than grow without bound
+    gLogQueue.emplace_back(level, buf);
+}
+
+void drainDeferredLogs()
+{
+    std::deque<std::pair<LogLevel, std::string>> batch;
+    {
+        std::lock_guard<std::mutex> lock(gLogMutex);
+        batch.swap(gLogQueue);
+    }
+
+    for (const auto &entry : batch) {
+        switch (entry.first) {
+        case LogLevel::Info:
+            LOG_INFO("%s", entry.second.c_str());
+            break;
+        case LogLevel::Warn:
+            LOG_WARN("%s", entry.second.c_str());
+            break;
+        case LogLevel::Error:
+            LOG_ERROR("%s", entry.second.c_str());
+            break;
+        }
+    }
+}
 
 /// Chunk size for a single `ts_tcp_recv`. One MTU-ish read keeps the reader
 /// responsive without making the buffer churn.
@@ -53,11 +99,11 @@ static void readerLoop(std::shared_ptr<ConnState> st)
 
         int n = ts_tcp_recv(st->stream, chunk.data(), chunk.size());
         if (n == 0) {
-            LOG_INFO("Tailscale: peer closed connection");
+            TS_LOG_INFO("Tailscale: peer closed connection");
             break;
         }
         if (n < 0) {
-            LOG_WARN("Tailscale: recv failed (%d), dropping connection", n);
+            TS_LOG_WARN("Tailscale: recv failed (%d), dropping connection", n);
             break;
         }
 
@@ -107,7 +153,7 @@ static void writerLoop(std::shared_ptr<ConnState> st)
         while (off < chunk.size()) {
             int n = ts_tcp_send(st->stream, chunk.data() + off, chunk.size() - off);
             if (n <= 0) {
-                LOG_WARN("Tailscale: send failed (%d), dropping connection", n);
+                TS_LOG_WARN("Tailscale: send failed (%d), dropping connection", n);
                 st->peerUp.store(false);
                 break;
             }
@@ -203,7 +249,7 @@ size_t TailscaleConn::write(const uint8_t *buf, size_t size)
         // stream is not.
         const size_t room = st->txBuf.size() < TS_TX_BUFFER_LIMIT ? TS_TX_BUFFER_LIMIT - st->txBuf.size() : 0;
         if (size > room) {
-            LOG_ERROR("Tailscale: tx queue full (%u queued, %u needed), dropping connection",
+            TS_LOG_ERROR("Tailscale: tx queue full (%u queued, %u needed), dropping connection",
                       (unsigned)st->txBuf.size(), (unsigned)size);
             st->peerUp.store(false);
             return 0;
@@ -339,43 +385,48 @@ TailscaleServer::AcceptState::~AcceptState()
 void TailscaleServer::begin()
 {
     if (accepting) {
-        LOG_WARN("Tailscale: server already listening on port %d", port);
+        LOG_WARN("Tailscale: server already starting/listening on port %d", port);
         return;
     }
 
+    accepting = std::make_shared<AcceptState>();
+    accepting->port = port;
+
+    // Everything the tailnet needs -- ts_init, ts_ipv4_addr, ts_tcp_listen --
+    // blocks, and this is called from setup(). Hand the lot to a thread and
+    // return, or a slow control server delays the radio coming up. On ESP32
+    // that delay would be a watchdog reset rather than just a late boot.
+    std::thread(bringUpLoop, accepting).detach();
+}
+
+void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
+{
+    if (!TailscaleTransport::begin())
+        return; // it has already logged why
+
     ts_device *dev = TailscaleTransport::device();
-    if (!dev) {
-        LOG_ERROR("Tailscale: cannot listen, device is not joined");
-        return;
-    }
 
     ts_sockaddr addr = {};
     addr.sa_family = TS_AF_INET;
-    addr.sa_data.sockaddr_in.sin_port = static_cast<uint16_t>(port);
+    addr.sa_data.sockaddr_in.sin_port = static_cast<uint16_t>(as->port);
     if (ts_ipv4_addr(dev, &addr.sa_data.sockaddr_in.sin_addr) != 0) {
-        LOG_ERROR("Tailscale: no tailnet IPv4 assigned yet");
+        TS_LOG_ERROR("Tailscale: no tailnet IPv4 assigned, not listening");
         return;
     }
 
     ts_tcp_listener *listener = ts_tcp_listen(dev, &addr);
     if (!listener) {
-        LOG_ERROR("Tailscale: listen on port %d failed", port);
+        TS_LOG_ERROR("Tailscale: listen on port %d failed", as->port);
         return;
     }
+    as->listener = listener;
 
-    accepting = std::make_shared<AcceptState>();
-    accepting->listener = listener;
-    std::thread(acceptorLoop, accepting).detach();
+    TS_LOG_INFO("Tailscale: API server listening on %s:%d", TailscaleTransport::ipv4().c_str(), as->port);
 
-    LOG_INFO("Tailscale: API server listening on %s:%d", TailscaleTransport::ipv4().c_str(), port);
-}
-
-void TailscaleServer::acceptorLoop(std::shared_ptr<AcceptState> as)
-{
     while (as->running.load()) {
         ts_tcp_stream *stream = ts_tcp_accept(as->listener);
         if (!stream) {
-            LOG_WARN("Tailscale: accept failed, acceptor exiting");
+            TS_LOG_WARN("Tailscale: accept failed, acceptor exiting");
             break;
         }
         if (!as->running.load()) {
@@ -384,7 +435,7 @@ void TailscaleServer::acceptorLoop(std::shared_ptr<AcceptState> as)
         }
 
         auto conn = tailscale_shim::TailscaleConn::create(stream);
-        LOG_INFO("Tailscale: incoming connection from %s", conn->remoteAddr().c_str());
+        TS_LOG_INFO("Tailscale: incoming connection from %s", conn->remoteAddr().c_str());
 
         std::lock_guard<std::mutex> lock(as->mutex);
         as->pending.push_back(std::move(conn));
@@ -423,7 +474,18 @@ namespace TailscaleTransport
 
 static ts_device *gDevice = nullptr;
 
-bool begin(const char *stateFile, const char *authKey, const char *hostname)
+static std::string gStateFile;
+static std::string gAuthKey;
+static std::string gHostname;
+
+void configure(const std::string &stateFile, const std::string &authKey, const std::string &hostname)
+{
+    gStateFile = stateFile;
+    gAuthKey = authKey;
+    gHostname = hostname;
+}
+
+bool begin()
 {
     if (gDevice)
         return true;
@@ -434,30 +496,40 @@ bool begin(const char *stateFile, const char *authKey, const char *hostname)
     // `true` regenerates the file if it is missing or corrupt, which is what
     // makes first boot work without a separate provisioning step.
     ts_persisted_key_state keys = {};
-    if (ts_load_key_file(stateFile, true, &keys) < 0) {
-        LOG_ERROR("Tailscale: could not load or create key state at %s", stateFile);
+    if (ts_load_key_file(gStateFile.c_str(), true, &keys) < 0) {
+        TS_LOG_ERROR("Tailscale: could not load or create key state at %s", gStateFile.c_str());
         return false;
     }
 
     // Zero-initialised for defaults -- the header is explicit that leaving
     // this uninitialised is UB.
     ts_config config = {};
-    config.hostname = hostname;
+    config.hostname = gHostname.c_str();
     config.key_state = &keys;
 
-    // ts_init blocks on the control-plane handshake and the first DERP
-    // connection, which can take several seconds. Say so before we go quiet,
-    // otherwise a slow or failed join is indistinguishable from a hang during
-    // startup. Rust-side detail is on stderr at INFO; RUST_LOG=debug for more.
-    LOG_INFO("Tailscale: joining tailnet as %s, this can take a few seconds", hostname);
+    TS_LOG_INFO("Tailscale: joining tailnet as %s, this can take a few seconds", gHostname.c_str());
 
-    gDevice = ts_init(&config, authKey);
+    gDevice = ts_init(&config, gAuthKey.c_str());
     if (!gDevice) {
-        LOG_ERROR("Tailscale: failed to join tailnet");
+        TS_LOG_ERROR("Tailscale: failed to join tailnet");
         return false;
     }
 
-    LOG_INFO("Tailscale: joined tailnet as %s (%s)", hostname, ipv4().c_str());
+    // A non-null device is NOT proof of a join. When the control server
+    // rejects the node (a bad or spent auth key -> MachineNotAuthorized),
+    // ts_init still hands back a device and only the absence of an address
+    // gives it away. Without this check the log claimed "joined tailnet" with
+    // an empty IP and the real cause was buried in Rust-side tracing.
+    const std::string addr = ipv4();
+    if (addr.empty()) {
+        TS_LOG_ERROR("Tailscale: registered no tailnet IP -- control server rejected this node. "
+                  "Check that authkey is valid and not already spent (RUST_LOG=info for the reason)");
+        ts_deinit(gDevice);
+        gDevice = nullptr;
+        return false;
+    }
+
+    TS_LOG_INFO("Tailscale: joined tailnet as %s (%s)", gHostname.c_str(), addr.c_str());
     return true;
 }
 

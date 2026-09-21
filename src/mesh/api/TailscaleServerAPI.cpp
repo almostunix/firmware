@@ -27,6 +27,16 @@ struct TailscaleSettings {
     std::string stateFile = "tailscale_keys.json";
 };
 
+/// Trim ASCII whitespace from both ends.
+static std::string trim(const std::string &s)
+{
+    static const char *ws = " \t\r\n";
+    const size_t b = s.find_first_not_of(ws);
+    if (b == std::string::npos)
+        return {};
+    return s.substr(b, s.find_last_not_of(ws) - b + 1);
+}
+
 static bool loadSettings(const char *path, TailscaleSettings &out)
 {
     std::ifstream f(path);
@@ -37,17 +47,23 @@ static bool loadSettings(const char *path, TailscaleSettings &out)
 
     std::string line;
     while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#')
-            continue;
-        const size_t eq = line.find('=');
-        if (eq == std::string::npos)
+        // Trim before inspecting: this file is hand-edited, so `authkey = x`
+        // and an indented comment are both things people actually write. An
+        // untrimmed key would silently fail to match, and an untrimmed value
+        // would send a leading space to the control plane and come back as an
+        // opaque auth rejection.
+        const std::string entry = trim(line);
+        if (entry.empty() || entry[0] == '#')
             continue;
 
-        const std::string key = line.substr(0, eq);
-        std::string value = line.substr(eq + 1);
-        // Tolerate CRLF and trailing blanks -- this file gets hand-edited.
-        while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' '))
-            value.pop_back();
+        const size_t eq = entry.find('=');
+        if (eq == std::string::npos) {
+            LOG_WARN("Tailscale: ignoring line without '=' in %s", path);
+            continue;
+        }
+
+        const std::string key = trim(entry.substr(0, eq));
+        const std::string value = trim(entry.substr(eq + 1));
 
         if (key == "authkey")
             out.authKey = value;
@@ -55,12 +71,21 @@ static bool loadSettings(const char *path, TailscaleSettings &out)
             out.hostname = value;
         else if (key == "statefile")
             out.stateFile = value;
+        else
+            LOG_WARN("Tailscale: ignoring unknown setting '%s' in %s", key.c_str(), path);
     }
 
     if (out.authKey.empty()) {
         LOG_ERROR("Tailscale: config at %s has no authkey=", path);
         return false;
     }
+
+    // Catch a truncated or mis-pasted key here rather than as an opaque
+    // rejection from the control plane several seconds later. Never log the
+    // key itself -- only whether its shape is plausible.
+    if (out.authKey.rfind("tskey-", 0) != 0)
+        LOG_WARN("Tailscale: authkey in %s does not start with 'tskey-'; if the join fails, suspect a paste error", path);
+
     return true;
 }
 
@@ -77,10 +102,11 @@ void initTailscaleApiServer(int port)
     if (!loadSettings(configPath, settings))
         return;
 
-    // Joining blocks until the control plane answers, so this belongs in
-    // startup rather than anywhere the scheduler can reach.
-    if (!TailscaleTransport::begin(settings.stateFile.c_str(), settings.authKey.c_str(), settings.hostname.c_str()))
-        return;
+    // Hand the settings over and let the server's own bring-up thread do the
+    // joining. Nothing in here may block: this runs from setup(), and the join
+    // can take tens of seconds when the control server is slow or rejects the
+    // node -- which previously stalled the radio coming up.
+    TailscaleTransport::configure(settings.stateFile, settings.authKey, settings.hostname);
 
     tailscaleApiPort = new TailscaleServerPort(port);
     tailscaleApiPort->init();
@@ -104,5 +130,11 @@ TailscaleServerAPI::TailscaleServerAPI(TailscaleClient &_client) : ServerAPI(_cl
 }
 
 TailscaleServerPort::TailscaleServerPort(int port) : APIServerPort(port) {}
+
+int32_t TailscaleServerPort::runOnce()
+{
+    tailscale_shim::drainDeferredLogs();
+    return APIServerPort::runOnce();
+}
 
 #endif // MESHTASTIC_TAILSCALE

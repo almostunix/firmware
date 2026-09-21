@@ -61,6 +61,41 @@
 namespace tailscale_shim
 {
 
+/**
+ * Thread-safe logging for the worker threads.
+ *
+ * Meshtastic's LOG_ macros are not safe off the scheduler thread.
+ * `RedirectablePrint::log()` writes into a console buffer allocated once at
+ * startup, and `log_to_serial()` reads the global
+ * `concurrency::OSThread::currentThread` that `OSThread::run()` writes every
+ * tick -- ThreadSanitizer flags both as races when a worker logs. Upstream
+ * never hits this because portduino's scheduler is cooperative and
+ * single-threaded; the worker threads here are what introduce it. And because
+ * RedirectablePrint also feeds `emitLogRecord()`, a racing log can corrupt the
+ * protobuf log stream, not merely garble the console.
+ *
+ * So workers queue their messages and the scheduler emits them from
+ * `TailscaleServerPort::runOnce()`, where LOG_ is safe again.
+ */
+enum class LogLevel { Info, Warn, Error };
+
+/// Queue a log line. Safe from any thread; never blocks on the scheduler.
+void deferLog(LogLevel level, const char *format, ...) __attribute__((format(printf, 2, 3)));
+
+/// Emit everything queued. Scheduler thread only.
+void drainDeferredLogs();
+
+} // namespace tailscale_shim
+
+/// Worker-thread logging. Same shape as LOG_INFO/LOG_WARN/LOG_ERROR, but
+/// queued for the scheduler instead of touching RedirectablePrint directly.
+#define TS_LOG_INFO(...) tailscale_shim::deferLog(tailscale_shim::LogLevel::Info, __VA_ARGS__)
+#define TS_LOG_WARN(...) tailscale_shim::deferLog(tailscale_shim::LogLevel::Warn, __VA_ARGS__)
+#define TS_LOG_ERROR(...) tailscale_shim::deferLog(tailscale_shim::LogLevel::Error, __VA_ARGS__)
+
+namespace tailscale_shim
+{
+
 /// Upper bound on buffered rx bytes per connection. The reader parks once this
 /// is reached and resumes as the scheduler drains it, giving us TCP
 /// backpressure instead of unbounded growth behind a stalled consumer.
@@ -227,31 +262,46 @@ class TailscaleServer : public Server
     explicit TailscaleServer(int port) : port(port) {}
     ~TailscaleServer();
 
-    /// Bind the tailnet address and start the acceptor thread.
+    /// Start bringing the tailnet listener up. Returns immediately; the join
+    /// and the bind happen on a background thread, and `available()` simply
+    /// reports nothing until they finish.
     void begin() override;
 
     /// Hand over a pending connection, or a falsy client if none is waiting.
     /// Never blocks -- this runs on the scheduler thread.
     TailscaleClient available();
 
+    /// Alias for `available()`.
+    ///
+    /// `APIServerPort::runOnce()` chooses between the two by architecture:
+    /// portduino takes `available()`, while ARCH_ESP32 on Arduino core >= 3.0.0
+    /// -- which is exactly the heltec-v4 target -- takes `accept()`. Providing
+    /// both means the same shim compiles on the board without an #ifdef here.
+    TailscaleClient accept() { return available(); }
+
     /// `Server` inherits `Print`; a listener has nothing to write to.
     size_t write(uint8_t) override { return 0; }
 
   private:
-    /// Shared with the detached acceptor, for the same reason `ConnState` is
-    /// shared with the connection workers: the acceptor parks inside
-    /// `ts_tcp_accept` and must have somewhere valid to deliver into.
+    /// Shared with the detached bring-up thread, for the same reason
+    /// `ConnState` is shared with the connection workers: that thread parks
+    /// inside `ts_tcp_accept` and must have somewhere valid to deliver into.
     struct AcceptState {
         ~AcceptState();
+        int port = 0;
         ts_tcp_listener *listener = nullptr;
         std::atomic<bool> running{true};
         std::mutex mutex;
         std::deque<std::shared_ptr<tailscale_shim::TailscaleConn>> pending;
     };
 
-    /// Parks in `ts_tcp_accept` and delivers into the shared state. Static so
-    /// it can outlive the server object the way a detached thread must.
-    static void acceptorLoop(std::shared_ptr<AcceptState> as);
+    /// Joins the tailnet, opens the listener, then accepts forever.
+    ///
+    /// All three steps block, so all three live off the scheduler thread.
+    /// `ts_ipv4_addr` in particular has been measured taking 33 seconds to
+    /// return when the control server rejects the node, which stalled the
+    /// whole of meshtasticd's startup when this ran inline.
+    static void bringUpLoop(std::shared_ptr<AcceptState> as);
 
     int port;
     std::shared_ptr<AcceptState> accepting;
@@ -266,8 +316,12 @@ class TailscaleServer : public Server
  */
 namespace TailscaleTransport
 {
-/// Bring up the tailnet device. Idempotent; returns true once joined.
-bool begin(const char *stateFile, const char *authKey, const char *hostname);
+/// Record the settings `begin()` will use. Called on the startup thread.
+void configure(const std::string &stateFile, const std::string &authKey, const std::string &hostname);
+/// Bring up the tailnet device using the configured settings. Blocks, so call
+/// it off the scheduler thread. Idempotent; true only once the node is
+/// actually registered and holds a tailnet IPv4.
+bool begin();
 /// The device, or nullptr if `begin()` has not succeeded.
 ts_device *device();
 /// This node's tailnet IPv4 as a dotted quad, or empty if not joined.

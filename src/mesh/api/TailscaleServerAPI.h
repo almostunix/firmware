@@ -28,6 +28,14 @@ class TailscaleServerPort : public APIServerPort<TailscaleServerAPI, TailscaleSe
 {
   public:
     explicit TailscaleServerPort(int port);
+
+  protected:
+    /// Emit whatever the worker threads queued, then do the usual accept work.
+    ///
+    /// This is the one place shim log messages can safely reach LOG_: the
+    /// scheduler owns RedirectablePrint and `OSThread::currentThread`, and a
+    /// worker touching either races the main loop.
+    int32_t runOnce() override;
 };
 
 /**
