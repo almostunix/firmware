@@ -3,10 +3,23 @@
 
 #define ADC_CTRL 37
 #define ADC_CTRL_ENABLED HIGH
+// TEMPORARY, Phase 2 bring-up debt. src/Power.cpp's battery sensing is written
+// against ESP-IDF's legacy ADC driver (adc1_get_raw, adc1_config_width,
+// esp_adc_cal_*), which IDF 5.x replaced with esp_adc/adc_oneshot.h. On the
+// pioarduino/IDF 5.5 platform those symbols are gone, and the whole block is
+// gated behind `#if defined(BATTERY_PIN) && defined(ARCH_ESP32)` -- so not
+// defining BATTERY_PIN compiles it out via a path Meshtastic already supports
+// for boards without a battery divider.
+//
+// The cost is real: no battery voltage or charge state on this build. Restore by
+// porting Power.cpp to esp_adc_oneshot, which upstream will have to do anyway to
+// finish its own Arduino 3 migration. Do not ship a node with this in place.
+#ifndef MESHTASTIC_EXCLUDE_BATTERY_ADC
 #define BATTERY_PIN 1 // A battery voltage measurement pin, voltage divider connected here to measure battery voltage
 #define ADC_CHANNEL ADC1_GPIO1_CHANNEL
 #define ADC_ATTENUATION ADC_ATTEN_DB_2_5 // lower dB for high resistance voltage divider
 #define ADC_MULTIPLIER 4.9 * 1.045
+#endif
 
 #define USE_SX1262
 

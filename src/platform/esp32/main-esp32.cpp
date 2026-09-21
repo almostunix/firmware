@@ -166,11 +166,22 @@ void esp32Setup()
 // #define APP_WATCHDOG_SECS 45
 #define APP_WATCHDOG_SECS 90
 
-#ifdef CONFIG_IDF_TARGET_ESP32C6
-    esp_task_wdt_config_t *wdt_config = (esp_task_wdt_config_t *)malloc(sizeof(esp_task_wdt_config_t));
-    wdt_config->timeout_ms = APP_WATCHDOG_SECS * 1000;
-    wdt_config->trigger_panic = true;
-    res = esp_task_wdt_init(wdt_config);
+// ESP-IDF 5 replaced esp_task_wdt_init(timeout, panic) with a config struct.
+// This was previously gated on CONFIG_IDF_TARGET_ESP32C6 -- the first variant
+// moved to an IDF 5 platform -- which made a per-SDK change look like a
+// per-chip one, so any other target on IDF 5 failed to compile. Key it to the
+// SDK version it actually depends on.
+//
+// Also note the old C6 branch malloc'd the config and set only two of three
+// fields, leaving idle_core_mask as heap garbage (and never freeing it). A
+// stack struct with every field set avoids both problems.
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = APP_WATCHDOG_SECS * 1000,
+        .idle_core_mask = 0, // don't subscribe the idle tasks
+        .trigger_panic = true,
+    };
+    res = esp_task_wdt_init(&wdt_config);
     assert(res == ESP_OK);
 #else
     res = esp_task_wdt_init(APP_WATCHDOG_SECS, true);
