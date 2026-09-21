@@ -3,9 +3,9 @@
 #ifdef MESHTASTIC_TAILSCALE
 
 #include "TailscaleServerAPI.h"
+#include "FSCommon.h"
 #include <Arduino.h>
 #include <cstdlib>
-#include <fstream>
 #include <string>
 
 static TailscaleServerPort *tailscaleApiPort;
@@ -21,10 +21,28 @@ static TailscaleServerPort *tailscaleApiPort;
  *
  * Format is one `key=value` per line: `authkey=`, `hostname=`, `statefile=`.
  */
+/// Where the node's persistent identity lives, as a path the *Rust* side will
+/// open with std::fs -- so it must be a real VFS path, not an FSCom-relative
+/// one. On ESP32, LittleFS is mounted through esp_littlefs at basePath
+/// "/littlefs" (see FSCommon.h: FSCom.begin(true) with Arduino's default), so
+/// FSCom's "/prefs/x" is "/littlefs/prefs/x" to anything outside the Arduino FS
+/// wrapper. Portduino just uses the process working directory.
+#ifdef ARCH_ESP32
+#define TS_DEFAULT_STATEFILE "/littlefs/prefs/tailscale_keys.json"
+#else
+#define TS_DEFAULT_STATEFILE "tailscale_keys.json"
+#endif
+
+/// Default config location, opened through FSCom, so it is relative to whatever
+/// FSCom is rooted at: LittleFS on ESP32, the --fsdir directory on Portduino.
+/// One path for every platform, alongside Meshtastic's own prefs -- a bare
+/// "tailscale.conf" would look like the working directory but does not mean that
+/// on either platform.
+
 struct TailscaleSettings {
     std::string authKey;
     std::string hostname = "meshtastic";
-    std::string stateFile = "tailscale_keys.json";
+    std::string stateFile = TS_DEFAULT_STATEFILE;
 };
 
 /// Trim ASCII whitespace from both ends.
@@ -39,14 +57,22 @@ static std::string trim(const std::string &s)
 
 static bool loadSettings(const char *path, TailscaleSettings &out)
 {
-    std::ifstream f(path);
-    if (!f) {
+    // Read through FSCom, not std::ifstream. On ESP32 there is no working
+    // directory and LittleFS is not on the C++ standard library's path, so an
+    // ifstream with a relative name silently finds nothing and the tailnet API
+    // just reports itself disabled. FSCom is the abstraction Meshtastic already
+    // uses for exactly this, and it works on every platform.
+    auto f = FSCom.open(path, FILE_O_READ);
+    if (!f || f.isDirectory()) {
         LOG_WARN("Tailscale: no config at %s, tailnet API disabled", path);
+        if (f)
+            f.close();
         return false;
     }
 
     std::string line;
-    while (std::getline(f, line)) {
+    while (f.available()) {
+        line = std::string(f.readStringUntil('\n').c_str());
         // Trim before inspecting: this file is hand-edited, so `authkey = x`
         // and an indented comment are both things people actually write. An
         // untrimmed key would silently fail to match, and an untrimmed value
@@ -75,6 +101,8 @@ static bool loadSettings(const char *path, TailscaleSettings &out)
             LOG_WARN("Tailscale: ignoring unknown setting '%s' in %s", key.c_str(), path);
     }
 
+    f.close();
+
     if (out.authKey.empty()) {
         LOG_ERROR("Tailscale: config at %s has no authkey=", path);
         return false;
@@ -96,7 +124,7 @@ void initTailscaleApiServer(int port)
 
     const char *configPath = getenv("MESHTASTIC_TAILSCALE_CONFIG");
     if (!configPath)
-        configPath = "tailscale.conf";
+        configPath = "/prefs/tailscale.conf";
 
     TailscaleSettings settings;
     if (!loadSettings(configPath, settings))
