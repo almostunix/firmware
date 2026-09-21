@@ -445,6 +445,12 @@ bool begin(const char *stateFile, const char *authKey, const char *hostname)
     config.hostname = hostname;
     config.key_state = &keys;
 
+    // ts_init blocks on the control-plane handshake and the first DERP
+    // connection, which can take several seconds. Say so before we go quiet,
+    // otherwise a slow or failed join is indistinguishable from a hang during
+    // startup. Rust-side detail is on stderr at INFO; RUST_LOG=debug for more.
+    LOG_INFO("Tailscale: joining tailnet as %s, this can take a few seconds", hostname);
+
     gDevice = ts_init(&config, authKey);
     if (!gDevice) {
         LOG_ERROR("Tailscale: failed to join tailnet");

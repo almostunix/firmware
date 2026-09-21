@@ -4,6 +4,10 @@
 # MESHTASTIC_TAILSCALE_CONFIG at it. Read by initTailscaleApiServer() in
 # src/mesh/api/TailscaleServerAPI.cpp.
 #
+# Rust-side diagnostics from tailscale-rs go to stderr at INFO by default.
+# Export RUST_LOG=debug (or RUST_LOG=tailscale=trace) before starting
+# meshtasticd when a join fails and you need to see why.
+#
 # authkey is required. Generate a reusable, ephemeral auth key in the Tailscale
 # admin console under Settings -> Keys. An ephemeral key is the right choice
 # here: the node is expected to come and go, and ephemeral nodes are reaped
