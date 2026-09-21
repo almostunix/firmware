@@ -39,7 +39,7 @@ reduction is measurable against something rather than re-derived later.
 | --- | --- | --- |
 | `native-macos` (stock) | 2,642,632 | 1,075,340 |
 | Phase 1: aws-lc-rs, `opt-level = "s"` | 17,839,768 | 7,972,984 |
-| \+ rustls-rustcrypto | 17,087,368 | 7,600,632 |
+| \+ pure-Rust TLS (rustcrypto) | 17,087,368 | 7,600,632 |
 | \+ `opt-level = "z"`, `codegen-units = 1`, `panic = "abort"` | 13,014,712 | **4,242,772** |
 
 So Phase 2 has taken the added code from **+6.6 MB down to +3.0 MB**, a 47%
@@ -53,13 +53,20 @@ The attribution is worth recording, because it is not what was expected:
   was *already* `lto = true, opt-level = "s", strip = true` — the win came from
   going further to `"z"` plus one codegen unit and `panic = "abort"`, not from
   turning on optimisation that was missing.
-- **the aws-lc-rs -> rustls-rustcrypto swap is nearly irrelevant to size**
-  (-372 KB, 4.7%). It is required because aws-lc-rs cannot build for Xtensa,
-  but it should not be sold as a size measure. It also drags in a second
-  `rustls-webpki` (0.102.8 alongside 0.103.15), which partly cancels the gain.
+- **replacing aws-lc-rs is nearly irrelevant to size** (-372 KB, 4.7%). It is
+  required because aws-lc-rs cannot build for Xtensa, but it should not be sold
+  as a size measure.
+
+The provider is `oxitls-rustcrypto-provider` 0.3.0, not the better-known
+`rustls-rustcrypto`. The latter is still 0.0.2-alpha and unpublished since
+April 2024, and it pins `rustls-webpki ^0.102` where this tree resolves
+0.103.15 — so it linked two copies of the certificate parser. oxitls has no
+webpki dependency. Swapping to it removed the duplicate and changed `__text` by
++108 bytes, i.e. not at all: LTO was already dead-stripping the unused copy, so
+this is an advisory-surface win rather than a size one.
 
 Still untouched, so still available: dropping `ts_netcheck`, `ts_netmon` and
-`ts_transport_tun`; `current_thread` tokio; and de-duplicating webpki.
+`ts_transport_tun`, and `current_thread` tokio.
 
 Measure with a forced relink, or trust nothing — see the note in
 `extra_scripts/tailscale_link.py`.
