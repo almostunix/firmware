@@ -30,3 +30,11 @@ if not os.path.isfile(archive):
     )
 
 env.Append(LINKFLAGS=[archive])
+
+# LINKFLAGS is an opaque value to SCons, not a file dependency, so changing the
+# archive does NOT invalidate the link by itself. Without this the build happily
+# reports SUCCESS while linking a stale libtailscalers.a -- which bit us once:
+# a Rust rebuild that cut 4.9MB off the archive produced a byte-identical
+# firmware until the binary was deleted by hand. Declare the dependency so a
+# `cargo build` is enough to force a relink.
+env.Depends("$BUILD_DIR/${PROGNAME}$PROGSUFFIX", archive)

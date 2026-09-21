@@ -38,23 +38,31 @@ reduction is measurable against something rather than re-derived later.
 | build | file | `__text` (machine code) |
 | --- | --- | --- |
 | `native-macos` (stock) | 2,642,632 | 1,075,340 |
-| `native-macos-tailscale` | 17,839,768 | 7,972,984 |
+| Phase 1: aws-lc-rs, `opt-level = "s"` | 17,839,768 | 7,972,984 |
+| \+ rustls-rustcrypto | 17,087,368 | 7,600,632 |
+| \+ `opt-level = "z"`, `codegen-units = 1`, `panic = "abort"` | 13,014,712 | **4,242,772** |
 
-So roughly **+6.6 MB of code, ~7.4x stock**. Most of the file-size difference
-beyond that is `__LINKEDIT` (symbol tables, 1.3 MB -> 6.4 MB), which an
-embedded build would not carry.
+So Phase 2 has taken the added code from **+6.6 MB down to +3.0 MB**, a 47%
+cut in `__text`. Against `default_16MB.csv`'s 6.25 MB app partition — which
+also has to hold Meshtastic's own ~1 MB — that now fits with room to spare,
+where the Phase 1 figure did not.
 
-For scale, `heltec_v4` uses `default_16MB.csv`, whose app partition is 6.25 MB
-and which also has to hold Meshtastic itself. Today's figure would not fit —
-but nothing that would shrink it has been done yet:
+The attribution is worth recording, because it is not what was expected:
 
-- built `--release` (`opt-level = 3`), not `opt-level = "z"` with LTO
-- aws-lc-rs is linked in, and Phase 2 replaces it with rustls-rustcrypto
-- `ts_netcheck`, `ts_netmon` and `ts_transport_tun` are all still linked
-- full multi-thread tokio, where Xtensa needs `current_thread`
-- no `-ffunction-sections` / `--gc-sections` dead-stripping on the Rust side
+- **the cargo profile is the dominant lever** (-3.36 MB, 44%). Note the profile
+  was *already* `lto = true, opt-level = "s", strip = true` — the win came from
+  going further to `"z"` plus one codegen unit and `panic = "abort"`, not from
+  turning on optimisation that was missing.
+- **the aws-lc-rs -> rustls-rustcrypto swap is nearly irrelevant to size**
+  (-372 KB, 4.7%). It is required because aws-lc-rs cannot build for Xtensa,
+  but it should not be sold as a size measure. It also drags in a second
+  `rustls-webpki` (0.102.8 alongside 0.103.15), which partly cancels the gain.
 
-The number worth acting on is a size-optimised Xtensa build after those.
+Still untouched, so still available: dropping `ts_netcheck`, `ts_netmon` and
+`ts_transport_tun`; `current_thread` tokio; and de-duplicating webpki.
+
+Measure with a forced relink, or trust nothing — see the note in
+`extra_scripts/tailscale_link.py`.
 
 ## Known gaps
 
