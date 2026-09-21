@@ -1,0 +1,20 @@
+# Phase 1 Tailscale settings for meshtasticd.
+#
+# Copy to `tailscale.conf` in the directory you run meshtasticd from, or point
+# MESHTASTIC_TAILSCALE_CONFIG at it. Read by initTailscaleApiServer() in
+# src/mesh/api/TailscaleServerAPI.cpp.
+#
+# authkey is required. Generate a reusable, ephemeral auth key in the Tailscale
+# admin console under Settings -> Keys. An ephemeral key is the right choice
+# here: the node is expected to come and go, and ephemeral nodes are reaped
+# automatically instead of accumulating in the machine list.
+authkey=tskey-auth-REPLACE-ME
+
+# Name this node claims on the tailnet. Its tailnet IP is derived from the
+# identity in statefile, not from this.
+hostname=meshtastic-dev
+
+# Where the node's persistent identity lives. Created on first run if absent,
+# and reused afterwards so the node keeps the same tailnet IP across restarts.
+# Treat it as a secret: it is the node's private key material.
+statefile=tailscale_keys.json

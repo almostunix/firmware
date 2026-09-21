@@ -64,6 +64,10 @@ NRF52Bluetooth *nrf52Bluetooth = nullptr;
 #include "mesh/wifi/WiFiAPClient.h"
 #endif
 
+#ifdef MESHTASTIC_TAILSCALE
+#include "mesh/api/TailscaleServerAPI.h"
+#endif
+
 #if HAS_ETHERNET && !defined(USE_WS5500) && !defined(USE_CH390D)
 #include "mesh/api/ethServerAPI.h"
 #include "mesh/eth/ethClient.h"
@@ -1027,6 +1031,12 @@ void setup()
     }
 #endif
     initApiServer(TCPPort);
+#ifdef MESHTASTIC_TAILSCALE
+    // Additive: the LAN API above keeps working regardless of whether
+    // the tailnet comes up. Different network stacks, so both can serve
+    // the same port number without conflicting.
+    initTailscaleApiServer(TCPPort);
+#endif
 #endif
 
     // Start airtime logger thread.

@@ -36,3 +36,8 @@ template class APIServerPort<ethServerAPI, EthernetServer>;
 template class ServerAPI<WiFiClient>;
 template class APIServerPort<WiFiServerAPI, WiFiServer>;
 #endif
+#ifdef MESHTASTIC_TAILSCALE
+#include "api/TailscaleServerAPI.h"
+template class ServerAPI<TailscaleClient>;
+template class APIServerPort<TailscaleServerAPI, TailscaleServer>;
+#endif

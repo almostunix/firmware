@@ -56,3 +56,8 @@ CMakeLists.txt
 .python3
 .claude/scheduled_tasks.lock
 userPrefs.jsonc.mcp-session-bak
+
+# Tailscale Phase 1: node auth key and persistent node identity. Both are
+# secrets -- tailscale_keys.json holds the node's private key material.
+tailscale.conf
+tailscale_keys.json
