@@ -177,6 +177,63 @@ There is in-repo precedent to follow rather than invent:
 `platform-espressif32` (pioarduino) at a pinned commit, plus a framework package
 built on `release_v5.1`.
 
+## Flash budget, and the OTA requirement for production
+
+Measured on the real Xtensa link (not estimated from the host, which was 41% low):
+
+| | bytes | |
+| --- | --- | --- |
+| stock `heltec-v4` | 2,226,741 | Meshtastic + IDF alone |
+| `heltec-v4-tailscale` | 6,346,337 | **+3.93 MB** of Rust |
+
+`heltec-v4-tailscale` currently uses `partition-table-16MB-noota.csv`, a single
+12.5 MB app slot, which puts it at 48%. **That layout has no OTA and is for
+bring-up only.**
+
+**Production needs `default_16MB.csv`** — two 6.25 MB slots so an update can be
+written to the inactive one. The good news is the firmware already fits it:
+6,346,337 of 6,553,600 is 96.8%, leaving 207,263 bytes. So OTA is achievable
+today, just without much room.
+
+One interaction to keep in mind, because it is not obvious:
+
+> **`RUST_LOG` and OTA cannot both be had at the current size.** Restoring
+> `tracing-subscriber`'s `env-filter` costs 243 KB, which would put the firmware
+> at 6,589,105 — over the 6,553,600 OTA slot. Either the diagnostics or the OTA
+> capability has to give, unless a trim below pays for both.
+
+Trims identified, with attribution, in order of value per unit of mess:
+
+1. **`ts_netcheck`, ~250 KB.** Uniquely pulls `stun-rs` -> `precis-profiles` ->
+   `precis-core` (45 KB of Unicode tables, almost all data) plus the
+   `stunner`/`direct` kameo monomorphizations (~35 KB). Costs STUN probing and
+   latency-based DERP region selection. 25 references through
+   `ts_runtime/control_runner.rs`, `multiderp/uniderp.rs` and `NetInfo`.
+   **This one alone would pay for both OTA margin and `RUST_LOG`.**
+2. **`p384`, 109 KB in 27 symbols.** oxitls exposes no per-curve features, so it
+   means a fork edit or moving to `rustls-rustcrypto-gated`, whose selling point
+   is exactly algorithm feature gating. Confirm Tailscale's servers never
+   negotiate P-384 first.
+3. **`webpki-roots`, ~250 KB for 118 roots — recommended against.** The crate
+   exposes one array with no per-root symbols, so trimming means hardcoding a
+   subset in the fork. If Tailscale rotates CAs, a field node stops connecting
+   with no remote fix. Not worth it.
+
+Where the code actually goes, by crate (top of 5.11 MB `.flash.text`): C/C++
+1,954,768 · kameo 552,383 · core 437,458 · tokio 391,316 · ts_runtime 177,452 ·
+alloc 139,079 · rustls 124,117 · p384 109,444 · h2+hyper+http 144,644 ·
+serde_json 68,268 · curve25519_dalek 67,858 · precis_core 46,689.
+
+`kameo` is the largest Rust crate but is the architecture — its size is
+per-actor monomorphization, so the only lever on it is removing actors, i.e.
+item 1.
+
+**Do not try to remove h2/HTTP-2.** It reads as vestigial — the workspace asks
+for hyper's `http2` while `ts_http_util` requests only `http1` — but
+`ts_control/src/control_dialer.rs:262` calls `ts_http_util::http2::connect()`.
+HTTP/2 is how the node reaches the control plane. Removing it (-145 KB) breaks
+the join; this was tried and reverted.
+
 ## Known gaps
 
 - **No shutdown primitive in ts_ffi.** Nothing can interrupt a thread parked in
