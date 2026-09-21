@@ -9,11 +9,30 @@ transport, so `TailscaleServerAPI` contains no protocol logic — a client
 reaching the node over Tailscale talks to the same API implementation it would
 reach over the LAN. PhoneAPI and StreamAPI are untouched.
 
-## Status: Phase 1 complete (native macOS ARM64)
+## Status: Phase 1 complete, Phase 2 native hardening validated
 
 Verified end to end on 2026-09-21: `meshtastic --host 100.x.y.z:4403 --info`,
 `--nodes` and `--sendtext` all work against `meshtasticd -s`, over DERP, with
 each connection accepted and closed cleanly.
+
+Re-verified after the Phase 2 changes — pure-Rust TLS (oxitls-rustcrypto-provider),
+`opt-level = "z"`, `codegen-units = 1`, `panic = "abort"`. A pure-Rust provider
+does complete a real handshake against Tailscale's control plane and a DERP
+relay; that could not be assumed from a successful build. Read and write paths
+were clean over the tailnet across repeated runs.
+
+Two operational findings worth keeping:
+
+- **A persisted `tailscale_keys.json` re-authenticates without spending an auth
+  key.** After the single-use Phase 1 key was consumed, stopping the node and
+  restarting it from the same working directory rejoined the same tailnet IP in
+  about a second, with no registration round-trip. Keep that file and testing
+  does not need a fresh key each run.
+- **`--sendtext` reports `Broken pipe` on the stock LAN listener but not on the
+  tailnet one** — 3 of 3 runs against `127.0.0.1:4403` versus 0 of 3 against the
+  tailnet address, same binary. That path contains none of this shim's code, so
+  it looks like a client-teardown race that loopback's latency exposes and the
+  tailnet's masks. Noted, not chased.
 
 ## Building
 
