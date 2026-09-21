@@ -28,11 +28,13 @@ Two operational findings worth keeping:
   restarting it from the same working directory rejoined the same tailnet IP in
   about a second, with no registration round-trip. Keep that file and testing
   does not need a fresh key each run.
-- **`--sendtext` reports `Broken pipe` on the stock LAN listener but not on the
-  tailnet one** — 3 of 3 runs against `127.0.0.1:4403` versus 0 of 3 against the
-  tailnet address, same binary. That path contains none of this shim's code, so
-  it looks like a client-teardown race that loopback's latency exposes and the
-  tailnet's masks. Noted, not chased.
+- **`--sendtext` intermittently reports `Broken pipe`, on both transports.**
+  Over 5 runs each with the same binary: 5/5 against the stock LAN listener on
+  `127.0.0.1:4403`, 3/5 against the tailnet listener. Since the LAN path
+  contains none of this shim's code, the shim is not the cause — but it is not
+  immune either, and an earlier 0/3 reading on the tailnet was small-sample
+  luck. Reads like a client-teardown race that loopback triggers more reliably.
+  Noted, not chased.
 
 ## Building
 
@@ -59,9 +61,11 @@ reduction is measurable against something rather than re-derived later.
 | `native-macos` (stock) | 2,642,632 | 1,075,340 |
 | Phase 1: aws-lc-rs, `opt-level = "s"` | 17,839,768 | 7,972,984 |
 | \+ pure-Rust TLS (rustcrypto) | 17,087,368 | 7,600,632 |
-| \+ `opt-level = "z"`, `codegen-units = 1`, `panic = "abort"` | 13,014,712 | **4,242,772** |
+| \+ `opt-level = "z"`, `codegen-units = 1`, `panic = "abort"` | 13,014,712 | 4,242,772 |
+| \+ `worker_threads(1)` | — | 4,241,456 |
+| \+ regex dropped from `ts_netmon` | — | **4,004,804** |
 
-So Phase 2 has taken the added code from **+6.6 MB down to +3.0 MB**, a 47%
+So Phase 2 has taken the added code from **+6.6 MB down to +2.79 MB**, a 50%
 cut in `__text`. Against `default_16MB.csv`'s 6.25 MB app partition — which
 also has to hold Meshtastic's own ~1 MB — that now fits with room to spare,
 where the Phase 1 figure did not.
@@ -84,8 +88,46 @@ webpki dependency. Swapping to it removed the duplicate and changed `__text` by
 +108 bytes, i.e. not at all: LTO was already dead-stripping the unused copy, so
 this is an advisory-surface win rather than a size one.
 
-Still untouched, so still available: dropping `ts_netcheck`, `ts_netmon` and
-`ts_transport_tun`, and `current_thread` tokio.
+### On the remaining two "Xtensa constraints"
+
+Both turned out to be largely answered already, and one of them was wrong.
+
+**`current_thread` tokio: do not.** It does not work here and it fails in a way
+that looks like success — the node joins, `ts_tcp_listen` returns a listener,
+the log says it is serving, and every connection times out. With no worker,
+spawned tasks (control-plane poll, DERP, netstack) only advance while a thread
+sits inside `block_on`, and ts_ffi's blocking API returns as soon as its own
+future resolves. Making it work needs a driver thread parked on the runtime plus
+reworking all 8 `block_on` sites to dispatch `'static` futures over a channel —
+and that driver thread costs exactly the one thread `worker_threads(1)` costs,
+so it buys no RAM. It buys 9 KB of flash (0.2%). `worker_threads(1)` is in
+place instead: one thread stack rather than two on a dual-core S3, no redesign.
+`thread_stack_size` is the next RAM lever and wants tuning against real
+high-water marks on the board.
+
+**Dropping ts_netcheck / ts_netmon / ts_transport_tun: mostly already true on
+the target.**
+
+- `ts_transport_tun` is not in the `ts_ffi` dependency graph at all. Nothing to
+  remove; it only ever arrived via `ts_cli_util`.
+- `ts_netmon` is already inert on ESP-IDF: `platform_mon()` is
+  `#[cfg(any(windows, target_os = "linux", target_os = "macos"))]` and returns
+  `None` elsewhere, so `ts_runtime` never starts the actor. Its expensive part
+  was `#[cfg(target_os = "macos")] pub mod bsd`, which does not compile for
+  Xtensa. The regex bloat it carried was therefore a **macOS-only artifact** —
+  removed above, which also makes these reference numbers more predictive of the
+  Xtensa build rather than less.
+- `ts_netcheck` is the only genuine lever left, and it is not cheap. It is live
+  (392 symbols), platform-independent, and removing it threads through 25
+  references across five `ts_runtime` files including `control_runner.rs`
+  (control-plane registration) and `multiderp/uniderp.rs`, plus `NetInfo`
+  reporting in `ts_control_serde`. It also costs function: no STUN probing and
+  no latency-based DERP region selection. Deferred deliberately — at +2.79 MB
+  against a 6.25 MB partition the space is not needed, and the right time to
+  judge it is against a real Xtensa build.
+
+A further size lever, not taken: `tracing-subscriber`'s `env-filter` feature
+pulls `matchers` -> `regex-automata` (~1,300 symbols still present).
 
 Measure with a forced relink, or trust nothing — see the note in
 `extra_scripts/tailscale_link.py`.
