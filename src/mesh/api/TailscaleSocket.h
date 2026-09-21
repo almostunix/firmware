@@ -135,9 +135,16 @@ class TailscaleConn
     /// Consume up to `size` buffered bytes. Never blocks. Returns count moved.
     size_t read(uint8_t *buf, size_t size);
 
-    /// Queue bytes for the writer. Never blocks. Returns count queued.
+    /// Queue bytes for the writer, all or nothing. Never blocks. Returns the
+    /// count queued: either `size`, or 0 if the queue could not take the whole
+    /// buffer (in which case the connection is dropped rather than a partial
+    /// frame emitted).
     size_t write(const uint8_t *buf, size_t size);
-    /// Block until the tx queue drains. Not for use on the scheduler thread.
+    /// Wait until queued bytes have been handed to the writer thread.
+    ///
+    /// Deliberately *not* a delivery barrier: StreamAPI calls this from the
+    /// scheduler thread after every packet, so blocking until bytes reach the
+    /// wire would stall the firmware loop whenever the relay is slow.
     void flush();
 
     /// True while the peer is up or buffered rx data remains unread.

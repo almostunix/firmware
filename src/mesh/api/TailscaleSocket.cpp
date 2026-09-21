@@ -94,6 +94,12 @@ static void writerLoop(std::shared_ptr<ConnState> st)
             chunk.assign(st->txBuf.begin(), st->txBuf.end());
             st->txBuf.clear();
         }
+        // Signal *handoff*, not delivery, and do it before sending. StreamAPI
+        // calls flush() on the scheduler thread after every packet; waiting
+        // for the send to complete would park that thread on a stalled DERP
+        // relay for an unbounded time -- the exact stall this whole design
+        // exists to avoid.
+        st->txDrained.notify_all();
 
         // `ts_tcp_send` returns once *at least one* byte is written, so a
         // single call is not enough -- loop until the chunk is gone.
@@ -107,8 +113,6 @@ static void writerLoop(std::shared_ptr<ConnState> st)
             }
             off += static_cast<size_t>(n);
         }
-
-        st->txDrained.notify_all();
 
         if (!st->peerUp.load())
             break;
@@ -191,12 +195,20 @@ size_t TailscaleConn::write(const uint8_t *buf, size_t size)
         if (!st->peerUp.load() || !st->running.load())
             return 0;
 
+        // All or nothing. StreamAPI::emitTxBuffer hands us a whole framed
+        // packet and ignores our return value, so accepting a prefix would put
+        // a truncated frame on the wire and the peer would fail to decode --
+        // the same torn-frame class of bug the `streamLock` in StreamAPI.h was
+        // added to fix. Dropping the connection is recoverable; a corrupt
+        // stream is not.
         const size_t room = st->txBuf.size() < TS_TX_BUFFER_LIMIT ? TS_TX_BUFFER_LIMIT - st->txBuf.size() : 0;
-        n = std::min(size, room);
-        if (n == 0) {
-            LOG_WARN("Tailscale: tx queue full, dropping %u bytes", (unsigned)size);
+        if (size > room) {
+            LOG_ERROR("Tailscale: tx queue full (%u queued, %u needed), dropping connection",
+                      (unsigned)st->txBuf.size(), (unsigned)size);
+            st->peerUp.store(false);
             return 0;
         }
+        n = size;
         st->txBuf.insert(st->txBuf.end(), buf, buf + n);
     }
     st->txPending.notify_one();
