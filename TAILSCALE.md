@@ -132,6 +132,51 @@ pulls `matchers` -> `regex-automata` (~1,300 symbols still present).
 Measure with a forced relink, or trust nothing — see the note in
 `extra_scripts/tailscale_link.py`.
 
+## Phase 2: Xtensa cross-build
+
+`ts_ffi` — and with it the whole tailscale-rs stack: tokio, rustls, DERP,
+smoltcp — **compiles for `xtensa-esp32s3-espidf`**. Verified: the archive holds
+ELF32 objects with `e_machine` 0x5E (Xtensa).
+
+    espup install --std --targets esp32s3 --toolchain-version 1.98.1.0
+    . ~/export-esp.sh
+    cd ../tailscale-rs-0.6.1
+    RUSTUP_TOOLCHAIN=esp cargo build -p ts_ffi --release \
+      --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+
+Notes that matter:
+
+- esp-rs ships Xtensa Rust **1.98.1.0**, matching this workspace's pinned
+  `1.98.1` exactly. No version conflict, which was the main toolchain risk.
+- There is no prebuilt std for the target, so `-Zbuild-std` plus the `rust-src`
+  component is required. `RUSTUP_TOOLCHAIN=esp` is needed to override
+  `rust-toolchain.toml`.
+- `mio` supports ESP-IDF: `espidf` is excluded from the epoll/kqueue selectors
+  and falls through to the `poll(2)` one, so tokio's networking has a path.
+  This was the risk most likely to make the whole approach a dead end.
+- Two source fixes were needed, both committed in the tailscale-rs fork:
+  dropping tokio's `"full"` feature set (its `signal` feature pulls
+  signal-hook-registry, which ESP-IDF's libc cannot satisfy), and gating
+  `ts_netmon`'s `PlatformMon` re-export, which was unconditional while the type
+  is only defined for macos/linux/windows.
+
+**Code size on Xtensa is still unknown.** With `lto = "fat"` the archive members
+are `.llvmbc` bitcode, so codegen happens at link time — the 19.6MB archive size
+says nothing about firmware size. The real number needs a link against ESP-IDF,
+which needs the platform bump below.
+
+### Next: the ESP-IDF platform bump
+
+`variants/esp32/esp32-common.ini` pins `platformio/espressif32@6.13.0`, which is
+Arduino core 2.0.17 on **ESP-IDF 4.4.7**. `esp-idf-sys` treats 4.4 as legacy and
+is tested against 5.1–5.5, so a bump is on the critical path regardless of which
+emulator rung comes next.
+
+There is in-repo precedent to follow rather than invent:
+`variants/esp32c6/esp32c6.ini` already replaces the pin with Jason2866's
+`platform-espressif32` (pioarduino) at a pinned commit, plus a framework package
+built on `release_v5.1`.
+
 ## Known gaps
 
 - **No shutdown primitive in ts_ffi.** Nothing can interrupt a thread parked in
