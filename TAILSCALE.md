@@ -190,17 +190,29 @@ Measured on the real Xtensa link (not estimated from the host, which was 41% low
 12.5 MB app slot, which puts it at 48%. **That layout has no OTA and is for
 bring-up only.**
 
-**Production needs `default_16MB.csv`** — two 6.25 MB slots so an update can be
-written to the inactive one. The good news is the firmware already fits it:
-6,346,337 of 6,553,600 is 96.8%, leaving 207,263 bytes. So OTA is achievable
-today, just without much room.
+**Production needs OTA, but NOT `default_16MB.csv`.** An earlier version of this
+file claimed the symmetric 6.25/6.25 split was required so an update could be
+written to the inactive slot. That was wrong. Meshtastic does not keep a second
+full firmware copy: `src/platform/esp32/MeshtasticOTA.cpp` looks up
+`ESP_PARTITION_SUBTYPE_APP_OTA_1` and boots a small dedicated OTA loader
+(`bin/device-install.sh` flashes `mt-<mcu>-ota.bin` there), which then writes the
+real firmware into `ota_0`. The project's own 4 MB table makes the intent plain:
+`app` is 0x250000 while `flashApp` is only 0x0A0000 (640 KB) — deliberately
+asymmetric. The symmetric 16 MB split is an inherited Arduino-core default.
+
+So an asymmetric 16 MB table — roughly `ota_0` ~11 MB, `ota_1` ~1 MB, spiffs
+3.5 MB — keeps OTA fully working with megabytes to spare. What it gives up is
+A/B rollback, which Meshtastic does not use on any board.
+
+For reference, the firmware does also fit the stock symmetric table:
+6,346,337 of 6,553,600 is 96.8%, leaving 207,263 bytes.
 
 One interaction to keep in mind, because it is not obvious:
 
-> **`RUST_LOG` and OTA cannot both be had at the current size.** Restoring
+> **`RUST_LOG` and OTA conflict only on the stock symmetric table.** Restoring
 > `tracing-subscriber`'s `env-filter` costs 243 KB, which would put the firmware
-> at 6,589,105 — over the 6,553,600 OTA slot. Either the diagnostics or the OTA
-> capability has to give, unless a trim below pays for both.
+> at 6,589,105 — over a 6,553,600 slot. On an asymmetric table (above) there is
+> room for both and the trade disappears.
 
 Trims identified, with attribution, in order of value per unit of mess:
 
@@ -233,6 +245,19 @@ for hyper's `http2` while `ts_http_util` requests only `http1` — but
 `ts_control/src/control_dialer.rs:262` calls `ts_http_util::http2::connect()`.
 HTTP/2 is how the node reaches the control plane. Removing it (-145 KB) breaks
 the join; this was tried and reverted.
+
+## Note: tailscale-rs already has an SSH server
+
+`tailscale-rs/src/ssh/` wraps **russh 0.60** behind the crate's `ssh` feature,
+with `Device::serve_ssh()` and an `ssh_peer_lookup` example. Two things stop it
+building here as shipped: `Cargo.toml:236` selects russh's `aws-lc-rs` backend
+(which cannot build for Xtensa — the same reason `ts_tls_util` had to move to a
+pure-Rust provider), and `ssh = [..., "dep:ratatui"]` pulls ratatui -> crossterm
+-> signal-hook-registry, the crate already documented above as unbuildable for
+ESP-IDF. Both are small edits in a repo we already fork.
+
+Worth knowing before anyone plans SSH work: it is not a from-scratch port.
+Sizing, and the reasons to be cautious about it, are in the scoping notes.
 
 ## Known gaps
 
