@@ -8,6 +8,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef ARCH_ESP32
+#include <esp_pthread.h>
+#endif
+
 namespace tailscale_shim
 {
 
@@ -167,6 +171,33 @@ static void writerLoop(std::shared_ptr<ConnState> st)
     st->txDrained.notify_all();
 }
 
+/**
+ * Give threads created here a usable stack before spawning them.
+ *
+ * std::thread on ESP-IDF is a pthread, and pthreads get
+ * CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT, which is 2048 bytes in the Arduino
+ * libs. These threads call into the Rust tailscale stack, so 2 KiB is not
+ * close to enough -- and a FreeRTOS stack overflow aborts the node rather than
+ * failing the call, which makes it look like a crash in whatever ran next.
+ *
+ * esp_pthread_set_cfg applies to the calling thread and is inherited by
+ * threads it creates, so this must run on the thread doing the spawning,
+ * immediately before it.
+ */
+static void setThreadStack(size_t bytes, const char *name)
+{
+#ifdef ARCH_ESP32
+    esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
+    cfg.stack_size = bytes;
+    cfg.thread_name = name;
+    cfg.inherit_cfg = true;
+    esp_pthread_set_cfg(&cfg);
+#else
+    (void)bytes;
+    (void)name;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // TailscaleConn
 // ---------------------------------------------------------------------------
@@ -180,6 +211,7 @@ std::shared_ptr<TailscaleConn> TailscaleConn::create(ts_tcp_stream *stream)
     // Detached on purpose: neither worker can be interrupted while parked in a
     // blocking ts_ffi call, so joining them would be a hang waiting to happen.
     // Their `shared_ptr<ConnState>` copies keep the state valid regardless.
+    setThreadStack(8 * 1024, "ts_io");
     std::thread(readerLoop, conn->st).detach();
     std::thread(writerLoop, conn->st).detach();
 
@@ -396,6 +428,9 @@ void TailscaleServer::begin()
     // blocks, and this is called from setup(). Hand the lot to a thread and
     // return, or a slow control server delays the radio coming up. On ESP32
     // that delay would be a watchdog reset rather than just a late boot.
+    // The bring-up thread runs the tailnet join, which goes through the TLS
+    // handshake, so it needs the deepest stack of the three.
+    tailscale_shim::setThreadStack(32 * 1024, "ts_bringup");
     std::thread(bringUpLoop, accepting).detach();
 }
 

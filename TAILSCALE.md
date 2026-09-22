@@ -355,6 +355,56 @@ For the record, read out of a generated superblock: disk version 0x00020001,
 block_size 4096, block_count 864, name_max 64 (not the 255 default), file_max
 0x7FFFFFFF, attr_max 1022.
 
+### What the simulator actually found
+
+Five real defects, in the order they surfaced. Every one of them would have
+presented on hardware, and three would have been hard to attribute there.
+
+1. **A 15.9MB flash image stalls wokwi-cli.** No clean rejection -- the
+   transport closes (code 1006) or the upload hangs. 6.5MB is fine. Fixed by
+   partition-table-wokwi.csv.
+
+2. **The task watchdog boot-loops the node.** IDF 5.5.5 sets
+   CONFIG_ESP_TASK_WDT_INIT=y, so the TWDT is already running before
+   esp32Setup(). esp_task_wdt_init() returns ESP_ERR_INVALID_STATE and the
+   assert(res == ESP_OK) panics. This came in with the IDF 5 re-gating: the
+   compile error was fixed without noticing the runtime contract had changed.
+   Now reconfigures the running instance. On a board this is a node that
+   reboots forever over USB serial with Tailscale as the obvious wrong suspect.
+
+3. **Serial went to USB CDC, which the simulator does not emulate.** The board
+   definition forces -DARDUINO_USB_CDC_ON_BOOT=1; diagram.json wires the
+   monitor to UART0. Every Meshtastic log line was invisible, and Arduino's
+   printAfterSetupInfo() crashed writing through it (IllegalInstruction at a
+   DROM address). Simulator builds pin Serial to UART0.
+
+4. **No LoRa radio in the simulation blocks setup() before networking.**
+   RadioLib waits on a BUSY line that never settles, so initWifi() -- and
+   therefore initTailscaleApiServer() -- is never reached. MESHTASTIC_SIMULATOR_NO_LORA
+   returns early from initLoRa(); main() already treats a null interface as a
+   recorded critical error and carries on. SimRadio is not an option, it is
+   compiled only for ARCH_PORTDUINO.
+
+5. **Thread stacks.** The big one. See the tokio commit in tailscale-rs and
+   setThreadStack() in TailscaleSocket.cpp. Rust wants 2 MiB per thread and
+   ESP-IDF pthreads get 2048 bytes; neither number is survivable.
+
+Confirmed working on the target as a result: boot, 2MB quad PSRAM, the
+partition table, LittleFS mount and config read, WiFi association with
+Wokwi-GUEST, DHCP (10.13.37.2), mDNS, and the stock API listening on 4403.
+
+### Where Wokwi stops being useful
+
+The CI plan caps a simulation at 5 minutes of wall clock, and this firmware
+needs ~145 seconds of *simulated* uptime to reach WiFi on Wokwi's throttled
+CPU. Runs land at 144-148s uptime when the cap hits -- the tailnet join is just
+past the edge, and which side of it a run falls on is decided by load on
+Wokwi's shared infrastructure, not by anything in the firmware.
+
+So the join itself was never exercised here. Do not spend more time on it:
+hardware has a real SX1262, no time cap, no throttling, and no monitored
+gateway -- which also means the auth key never crosses an intermediary.
+
 ### Sequence the runs to protect the key
 
 An ephemeral key is single-use. Run once with a deliberately invalid key first:

@@ -182,6 +182,14 @@ void esp32Setup()
         .trigger_panic = true,
     };
     res = esp_task_wdt_init(&wdt_config);
+    // IDF 5 starts the task watchdog itself when CONFIG_ESP_TASK_WDT_INIT is
+    // set, and the Arduino libs set it (with a 5s timeout). A second init then
+    // returns ESP_ERR_INVALID_STATE instead of succeeding, so asserting on
+    // ESP_OK panics in setup() and boot-loops the node -- observed in the
+    // simulator as "TWDT already initialized" followed by the assert at this
+    // line. Reconfigure the running instance to our timeout instead.
+    if (res == ESP_ERR_INVALID_STATE)
+        res = esp_task_wdt_reconfigure(&wdt_config);
     assert(res == ESP_OK);
 #else
     res = esp_task_wdt_init(APP_WATCHDOG_SECS, true);

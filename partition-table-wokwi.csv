@@ -1,0 +1,21 @@
+# SIMULATOR ONLY -- compact 16MB layout that keeps the flash image small.
+#
+# wokwi-cli uploads one blob covering flash from 0 up to the end of the last
+# partition it must contain. With the development table (spiffs at 0xC90000)
+# that blob is 15.9MB, most of it 0xFF padding between the app and the
+# filesystem -- and the upload stalls and the transport closes (code 1006).
+# A 6.5MB image uploads and boots fine, so the fix is to close the gap: put
+# spiffs immediately after the app, giving a ~6.8MB image.
+#
+# The board still reports 16MB of flash; this only changes where the partitions
+# sit, so nothing above 0x6D0000 is included in the upload.
+#
+# NOT FOR HARDWARE. app0 here is sized to the current binary with only a little
+# headroom, and there is no coredump region. Use partition-table-16MB-noota.csv
+# for USB flashing, and default_16MB.csv once OTA is restored for production.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x680000,
+spiffs,   data, spiffs,  0x690000, 0x40000,

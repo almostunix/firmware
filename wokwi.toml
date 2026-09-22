@@ -13,4 +13,8 @@
 [wokwi]
 version = 1
 firmware = ".pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.bin"
-elf = ".pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.elf"
+
+# No `elf =` on purpose. The ELF is ~51MB unstripped and wokwi-cli uploads it
+# alongside the firmware, which is dead weight when nothing is attaching a
+# debugger. Pass --elf .pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.elf
+# explicitly if you need symbols in a backtrace.
