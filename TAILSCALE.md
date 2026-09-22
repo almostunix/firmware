@@ -259,6 +259,44 @@ ESP-IDF. Both are small edits in a repo we already fork.
 Worth knowing before anyone plans SSH work: it is not a from-scratch port.
 Sizing, and the reasons to be cautious about it, are in the scoping notes.
 
+## Local emulation on an arm64 Mac: QEMU findings
+
+Espressif publishes a prebuilt `qemu-xtensa-softmmu` for **aarch64-apple-darwin**
+(release `esp-develop-9.2.2-20260417`, ~4 MB). It runs locally with no account,
+no token and nothing observing the traffic, which makes it strictly preferable to
+Wokwi for anything involving a real tailnet key. It needs
+`brew install pixman libgcrypt sdl2`, and `qemu-system-xtensa -machine help`
+confirms an `esp32s3` machine.
+
+**It does not currently boot Meshtastic's ESP32-S3 firmware**, and this is not
+caused by anything in this integration: stock `heltec-v4`, with no Tailscale
+compiled in at all, stops at the identical point. Both reach the ROM loader and
+hand off to the second-stage bootloader, which then prints nothing:
+
+    ESP-ROM:esp32s3-20210327
+    rst:0x1 (POWERON),boot:0x4 (SPI_FLASH_BOOT)
+    load:0x403cb700,len:0x30b0
+    entry 0x403c88b8          <- silence from here
+
+`-d guest_errors,unimp` shows why: `M25P80: Unknown cmd 5a / 7a / 77` — Read-SFDP
+and quad-PSRAM opcodes arriving at QEMU's generic SPI flash model, i.e. PSRAM is
+not being emulated on that bus, and bootloader PSRAM init stalls. Console routing
+was ruled out first (`CONFIG_ESP_CONSOLE_UART_DEFAULT=y`, so the bootloader does
+use UART0), as was the `-m 2M` PSRAM flag, which is correct per Espressif's docs.
+
+Getting further would mean a PSRAM-disabled build variant, which diverges from the
+board and which the Rust heap will eventually contradict anyway.
+
+And networking would still be missing: `CONFIG_ETH_USE_OPENETH is not set` in
+pioarduino's Arduino 3.3.12 precompiled libs for esp32s3. The ESP-IDF >= 5.3 floor
+for openeth-on-a-non-EMAC-chip **is** cleared by the 5.5.5 bump, so that is no
+longer the blocker — but flipping a Kconfig in precompiled Arduino libs means
+rebuilding the whole library set.
+
+Net: QEMU is the right *local* tool and is installed, but booting Meshtastic in it
+is its own project. Wokwi (cloud, token, throwaway tailnet) or hardware remain the
+practical routes.
+
 ## Known gaps
 
 - **No shutdown primitive in ts_ffi.** Nothing can interrupt a thread parked in
