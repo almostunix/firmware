@@ -56,9 +56,17 @@ reach over the LAN. PhoneAPI and StreamAPI are untouched.
 2. **No ESP32 node has been reachable from a peer yet.** No ESP32 run has
    reached "home relay advertised". The likely cause, stalled probes holding
    every permit under the cap, is fixed and verified natively only.
-3. The first `meshtastic --info` after ~150 s idle times out and the retry 2 s
-   later succeeds, reproducibly. Same flakiness as Phase 1, predates this work.
-   Unexplained; a WireGuard re-handshake through the relay is a guess.
+3. ~~The first `meshtastic --info` after ~2 minutes idle times out.~~ **Fixed
+   2026-09-22** (tailscale-rs `ca9b575`). A WireGuard bug: the responder's
+   replay check never fired (`last_seen_timestamp` was never written, and it
+   compared with `<`). A peer that has stopped trusting its best path sends a
+   rekey initiation over DERP *and* direct UDP, so it arrives twice; the node
+   answered both, discarded the session the peer had completed on, and dropped
+   every data packet as "session not found" for ~30 s. Measured first byte
+   after 130 s idle: 31.8-33.3 s before, 0.08 s after. Matters most on real
+   hardware, where a phone on the same WiFi has both paths. It was also a
+   replay DoS. Diagnosed with `bin/meshtastic-config-timeline.py`, which
+   timestamps the config download instead of reporting pass/fail.
 4. Stack sizes are budget-fitted, not high-water-mark measured
    (`uxTaskGetStackHighWaterMark`), especially through a TLS handshake.
 5. Battery accuracy against a real cell: check the reported voltage with a
