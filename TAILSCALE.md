@@ -412,6 +412,80 @@ an auth rejection from the control plane proves boot, WiFi association, config
 parsing and the join attempt all work, and costs nothing. Only then write the
 real key.
 
+## Running on ESP32 hardware
+
+Build and flash (the board must be on the machine running these; a VM without
+USB passthrough cannot):
+
+    bin/ts-set-secret.sh tailscale        # writes data/prefs/tailscale.conf
+    pio run -e heltec-v4-tailscale -t uploadfs   # LittleFS, carries the key
+    pio run -e heltec-v4-tailscale -t upload     # application
+    pio device monitor -b 115200
+
+uploadfs must come first on a fresh board, or the node boots with no config and
+reports the tailnet API disabled.
+
+Current size: 6,350,857 bytes, 48.5% of the 12.5MB single-app slot. Note that
+this table has no OTA -- see the flash budget section.
+
+### What the ESP32 needs that the host does not
+
+Four things, none of which the native build exercises:
+
+1. **An eventfd VFS.** tokio builds its IO driver's waker from an eventfd. On
+   Linux that syscall always exists; on ESP-IDF it is a VFS driver that nothing
+   registers for you, so eventfd() returns EACCES and the *runtime itself*
+   fails to construct. esp_vfs_eventfd_register() must run before the first
+   ts_ffi call.
+
+2. **Explicit thread stacks, split by what the thread touches.** Rust's default
+   is 2 MiB; ESP-IDF pthreads default to 2048 bytes. Neither works. Worse, the
+   two knobs live in different places: Rust's std::thread calls
+   pthread_attr_setstacksize explicitly, which overrides esp_pthread_set_cfg,
+   so **Rust owns the size and C++ owns the placement**. Setting a size in
+   esp_pthread_set_cfg for a Rust-created thread silently does nothing.
+
+3. **Internal DRAM for anything that touches flash.** A task on a PSRAM stack
+   may not be the one that disables the flash cache, and every SPI flash write
+   does -- it asserts in esp_task_stack_is_sane_cache_disabled(). This catches
+   more threads than expected: tailscale-rs reaches the key state through
+   tokio::fs, which dispatches to the blocking pool, so tokio's threads need
+   internal stacks too even though they look like pure network workers.
+
+4. **Headroom, measured rather than assumed.** At the moment the runtime is
+   built, with WiFi, mDNS, NTP and both web servers up: 110,700 bytes of
+   internal DRAM free, largest block 69,620. That is the budget every stack
+   above comes out of. 64 KiB fit the worker and then starved the blocking
+   pool; 24 KiB fits a worker plus two.
+
+### How these present
+
+Badly, and never as themselves. A Rust panic on a detached thread aborts the
+node, so all of them look like a boot loop. The eventfd failure surfaced as
+`assert failed: block_locate_free` -- the TLSF allocator tripping inside Rust's
+*panic printer* as it allocated a mutex on an already-starved heap, three
+layers from the cause and naming none of the parties involved.
+
+Two things made these findable, and both are worth keeping:
+
+- `.expect()` with a message instead of `.unwrap()`. The Os error code
+  (EACCES, then ENOMEM) was the entire diagnosis in both cases.
+- A heap measurement printed with esp_rom_printf, *not* the deferred logger.
+  Deferred logs are drained by the scheduler, so they are lost in exactly the
+  situation a crash diagnostic is for.
+
+### Unverified
+
+The 24 KiB tokio stack configuration has never run: the Wokwi CI quota was
+exhausted before it could be tested. Everything through the eventfd fix was
+observed working on an ESP32-S3. The tailnet join itself has not been exercised
+on any target other than the host.
+
+All stack sizes are budget-fitting numbers, not high-water marks. Check them
+with uxTaskGetStackHighWaterMark on hardware -- the rustls + p384 handshake is
+the deepest consumer and the one most likely to overflow a stack that merely
+fits.
+
 ## Known gaps
 
 - **No shutdown primitive in ts_ffi.** Nothing can interrupt a thread parked in
