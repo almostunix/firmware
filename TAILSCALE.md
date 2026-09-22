@@ -302,14 +302,23 @@ practical routes.
 Wokwi is the cloud simulator; `wokwi-cli` is at `~/.local/bin` (v0.27.1, arm64).
 Two secrets are needed and neither may be pasted into a chat or a shell command:
 
-    # Wokwi CI token -- from wokwi.com/dashboard/ci
-    read -rs "TOK?Wokwi CI token: " && (umask 077; printf 'export WOKWI_CLI_TOKEN=%s\n' "$TOK" > .wokwi-env) && unset TOK
+    bin/ts-set-secret.sh wokwi       # Wokwi CI token, from wokwi.com/dashboard/ci
+    bin/ts-set-secret.sh tailscale   # ephemeral, single-use tailnet auth key
 
-    # Tailnet auth key -- ephemeral, single-use, on a tailnet you can throw away
-    read -rs "KEY?Tailscale auth key: " && (umask 077; { echo "authkey=$KEY"; echo "hostname=meshtastic-wokwi"; } > data/prefs/tailscale.conf) && unset KEY
+Both prompt with echo off, validate before writing, write mode 600, and report
+only a length -- never a value. Both destinations are gitignored.
 
-Both paths are gitignored. `read` keeps the value off the command line, so it
-never reaches shell history.
+Use the script rather than a `read -s` one-liner. The one-liner was tried first
+and failed twice in one sitting: a `pbpaste` route wrote the *command text* into
+.wokwi-env, and the Wokwi token was typed at the Tailscale prompt. Neither was
+caught at the time, because an invisible prompt gives no feedback and nothing
+checked the result. The script rejects both: it requires `tskey-` for a tailnet
+key, rejects a `tskey-` value for the Wokwi token, and rejects anything
+containing a character outside [A-Za-z0-9._-].
+
+That last check is a safety property, not a nicety. .wokwi-env is *sourced*, so
+a value containing `;`, `&`, `>` or `$( )` is arbitrary code execution at the
+point of use. The token is also written single-quoted for the same reason.
 
 Then:
 
