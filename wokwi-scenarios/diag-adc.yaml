@@ -1,0 +1,31 @@
+# DIAGNOSTIC -- measures Wokwi's ADC transfer function, and observes the tailnet
+# bring-up with the dummy key, in one run.
+#
+# The dry run showed the simulated cell reading far below its 3.90 V setting.
+# Rather than guess why, step the potentiometer through known positions and
+# read raw/scaled back from the "Battery ADC read" trace. Three points fit a
+# line; if it is not a line, that is worth knowing too.
+#
+# Reads are throttled to one per 5s, so each position is held for 8s.
+name: Diagnostic -- ADC transfer function and tailnet bring-up
+version: 1
+author: Meshtastic + Tailscale bring-up
+steps:
+  - wait-serial: 'Battery ADC ready'
+  - wait-serial: 'Obtained IP address'
+  - wait-serial: 'Tailscale: joining tailnet as'
+  # Point 1: initial position 0.2308 (value 236) -> 0.762 V at the pin.
+  - delay: 8s
+  - set-control:
+      part-id: batt
+      control: position
+      value: 0.5
+  - delay: 8s
+  - set-control:
+      part-id: batt
+      control: position
+      value: 0.8
+  - delay: 8s
+  # Leave time for the dummy key's join to be rejected, so its outcome is in
+  # the log.
+  - delay: 20s

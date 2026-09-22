@@ -69,3 +69,6 @@ tailscale_keys.json
 # Tailscale config staged into the LittleFS image for simulator/board runs.
 # Same secret as /prefs/tailscale.conf on the device -- never commit it.
 data/prefs/tailscale.conf
+
+# gcc dependency files from ad-hoc -fsyntax-only checks run in the repo root
+/a-*.d

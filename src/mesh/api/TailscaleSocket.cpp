@@ -187,12 +187,19 @@ static void writerLoop(std::shared_ptr<ConnState> st)
  * threads it creates, so this must run on the thread doing the spawning,
  * immediately before it.
  */
-// Stack sizes, in bytes. Starting points sized for the rustls + p384 handshake
-// being the deepest consumer, to be tuned against the internal-DRAM figures
-// logged at bring-up and uxTaskGetStackHighWaterMark on hardware.
-static constexpr size_t TS_TOKIO_STACK = 32 * 1024;
-static constexpr size_t TS_BRINGUP_STACK = 24 * 1024;
-static constexpr size_t TS_IO_STACK = 8 * 1024;
+// Stack sizes, in bytes.
+//
+// TS_TOKIO_STACK only selects placement: Rust sets the pthread attr size
+// explicitly (thread_stack_size in ts_ffi, 64 KiB), which overrides this.
+//
+// The bring-up thread must be internal -- it does the key-state file I/O -- and
+// it also polls the join future via block_on, so it gets the largest internal
+// stack. Affordable because tokio's stacks are no longer in internal DRAM.
+// Everything else only touches sockets, so it lives in PSRAM with room to
+// spare. None of these are high-water-mark measurements yet.
+static constexpr size_t TS_TOKIO_STACK = 64 * 1024;
+static constexpr size_t TS_BRINGUP_STACK = 48 * 1024;
+static constexpr size_t TS_IO_STACK = 24 * 1024;
 
 /// Report internal-DRAM headroom. Thread stacks come from here, and how much is
 /// left depends on what else has started (WiFi, mDNS, two web servers), so the
@@ -205,9 +212,10 @@ static void logInternalHeap(const char *when)
     // logging is immediately followed by an abort -- which is exactly the case
     // this measurement exists to diagnose. esp_rom_printf goes straight to the
     // UART and is safe from any thread.
-    esp_rom_printf("Tailscale: internal DRAM %s: %u free, %u largest block\n", when,
+    esp_rom_printf("Tailscale: heap %s: internal %u free (%u largest), psram %u free\n", when,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 #else
     (void)when;
 #endif
@@ -261,6 +269,16 @@ static void setThreadStack(size_t bytes, const char *name, StackMem where)
 #endif
 }
 
+/// Undo setThreadStack for the calling thread, for threads that spawn ours but
+/// are not ours (Meshtastic's main loop).
+static void restoreThreadStackDefaults()
+{
+#ifdef ARCH_ESP32
+    esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
+    esp_pthread_set_cfg(&cfg);
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // TailscaleConn
 // ---------------------------------------------------------------------------
@@ -274,7 +292,7 @@ std::shared_ptr<TailscaleConn> TailscaleConn::create(ts_tcp_stream *stream)
     // Detached on purpose: neither worker can be interrupted while parked in a
     // blocking ts_ffi call, so joining them would be a hang waiting to happen.
     // Their `shared_ptr<ConnState>` copies keep the state valid regardless.
-    setThreadStack(TS_IO_STACK, "ts_io", StackMem::Internal);
+    setThreadStack(TS_IO_STACK, "ts_io", StackMem::Psram);
     std::thread(readerLoop, conn->st).detach();
     std::thread(writerLoop, conn->st).detach();
 
@@ -495,6 +513,10 @@ void TailscaleServer::begin()
     // handshake, so it needs the deepest stack of the three.
     tailscale_shim::setThreadStack(tailscale_shim::TS_BRINGUP_STACK, "ts_bringup", tailscale_shim::StackMem::Internal);
     std::thread(bringUpLoop, accepting).detach();
+    // This runs on Meshtastic's main thread, and the pthread config is sticky
+    // per thread: without this, any pthread it created later would silently
+    // inherit a 48 KiB internal-DRAM stack.
+    tailscale_shim::restoreThreadStackDefaults();
 }
 
 void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
@@ -626,13 +648,17 @@ bool begin()
     // forces the LazyLock, and that is where the eventfd is needed.
     registerEventFd();
 
-    // Internal, not PSRAM, and not obviously so. tailscale-rs reaches the key
-    // state through tokio::fs, which dispatches to the blocking pool rather
-    // than running on the calling thread -- so it is a *tokio* thread that ends
-    // up disabling the flash cache, and a PSRAM stack there asserts exactly as
-    // it would here. Measured against the numbers logged just below.
+    // PSRAM for every thread tokio creates from here on. Safe only because no
+    // tokio thread does file I/O on ESP-IDF: tailscale-rs's key-state access
+    // runs on the thread polling block_on -- this one, whose stack is internal
+    // -- rather than on tokio's blocking pool (key_fs in src/config.rs). Before
+    // that change it went through tokio::fs, and a PSRAM-stacked pool thread
+    // disabling the flash cache asserted in esp_task_stack_is_sane_cache_disabled.
+    //
+    // inherit_cfg carries this to threads tokio's own threads spawn later
+    // (the blocking pool, for DNS), which also never touch flash.
     tailscale_shim::logInternalHeap("before tokio runtime");
-    tailscale_shim::setThreadStack(tailscale_shim::TS_TOKIO_STACK, "ts_tokio", tailscale_shim::StackMem::Internal);
+    tailscale_shim::setThreadStack(tailscale_shim::TS_TOKIO_STACK, "ts_tokio", tailscale_shim::StackMem::Psram);
 
     ts_init_tracing();
 
@@ -644,6 +670,7 @@ bool begin()
         TS_LOG_ERROR("Tailscale: could not load or create key state at %s", gStateFile.c_str());
         return false;
     }
+    tailscale_shim::logInternalHeap("after runtime + key state");
 
     // Zero-initialised for defaults -- the header is explicit that leaving
     // this uninitialised is UB.
@@ -654,6 +681,7 @@ bool begin()
     TS_LOG_INFO("Tailscale: joining tailnet as %s, this can take a few seconds", gHostname.c_str());
 
     gDevice = ts_init(&config, gAuthKey.c_str());
+    tailscale_shim::logInternalHeap("after join attempt");
     if (!gDevice) {
         TS_LOG_ERROR("Tailscale: failed to join tailnet");
         return false;

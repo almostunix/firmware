@@ -55,6 +55,16 @@
 
 #endif
 
+// How often Power::runOnce() re-reads power status. The low-voltage cutoff
+// counts consecutive low readings (more than 10 triggers deep sleep), so this
+// period also sets how long a cell must stay below the cutoff before the node
+// acts: ~220s at the default. Overridable only so the simulator can exercise
+// that logic without spending minutes of paid simulation time waiting on it --
+// the thresholds, the counter and the smoothing filter are unchanged.
+#ifndef POWER_POLL_INTERVAL_MS
+#define POWER_POLL_INTERVAL_MS (1000 * 20)
+#endif
+
 #ifndef DELAY_FOREVER
 #define DELAY_FOREVER portMAX_DELAY
 #endif
@@ -376,6 +386,13 @@ class AnalogBatteryLevel : public HasBatteryLevel
 
             // LOG_DEBUG("battery gpio %d raw val=%u scaled=%u filtered=%u",
             // BATTERY_PIN, raw, (uint32_t)(scaled), (uint32_t) (last_read_value));
+#ifdef POWER_LOG_ADC_READS
+            // Every read, unthrottled -- the periodic "Battery:" line is limited to
+            // one per 50s and only prints once a battery is detected, so it cannot
+            // show a reading that is wrong. Pin voltage is scaled / ADC multiplier.
+            LOG_DEBUG("Battery ADC read: raw=%u scaled=%u filtered=%u", (unsigned)raw, (unsigned)scaled,
+                      (unsigned)last_read_value);
+#endif
         }
         return last_read_value;
 #endif // BATTERY_PIN
@@ -1053,7 +1070,7 @@ int32_t Power::runOnce()
 #endif
     // Only read once every 20 seconds once the power status for the app has been
     // initialized
-    return (statusHandler && statusHandler->isInitialized()) ? (1000 * 20) : RUN_SAME;
+    return (statusHandler && statusHandler->isInitialized()) ? POWER_POLL_INTERVAL_MS : RUN_SAME;
 }
 
 #ifdef ARCH_ESP32

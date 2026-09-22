@@ -1,0 +1,42 @@
+# DRY RUN -- dummy auth key. Proves everything up to the join without spending
+# a single-use key: runtime construction (eventfd + 24 KiB stacks), key state
+# written through tokio::fs on the blocking pool, and the join attempt itself.
+# The control plane will reject the dummy key; that rejection is in the serial
+# log for inspection and is the expected outcome.
+#
+# Then exercises the low-voltage cutoff, which has never armed in simulation:
+# with no divider, GPIO1 floated high and the firmware inferred USB power
+# (Heltec V4 has no VBUS detect -- USB is "battery voltage > 4200 mV").
+name: Dry run -- runtime, join attempt, battery cutoff
+version: 1
+author: Meshtastic + Tailscale bring-up
+steps:
+  # Battery sensing up, and reading a battery. The pot starts at 3.90 V (see
+  # diagram.json). Not 'usbPower=0': that line only prints once a battery is
+  # detected and is throttled to every 50s from boot, so it cannot appear
+  # before ~50s of uptime and never appears at all on a misread. The cutoff
+  # steps below prove usbPower=0 anyway -- the counter only runs without USB.
+  - wait-serial: 'Battery ADC ready'
+  - wait-serial: 'Power: battery hardware detected'
+
+  - wait-serial: 'Obtained IP address'
+
+  # The runtime constructed and the key state was written. Every earlier
+  # failure (EACCES, ENOMEM, flash-cache assert) happened before this line.
+  - wait-serial: 'Tailscale: joining tailnet as'
+
+  # Drop the cell to ~2.87 V: below the 3100 mV cutoff, above the 2600 mV
+  # "no battery" floor. Below that floor the firmware decides there is no
+  # battery at all and the cutoff never arms, so the margin matters.
+  # Position chosen for Wokwi's ADC, not real silicon. Measured: Wokwi maps the
+  # pin voltage linearly onto 0..4095 regardless of attenuation (position
+  # 0.2308 read raw=945, exactly 0.2308 * 4095), while the calibration curve
+  # correctly assumes the 2.5 dB range of a real S3. So positions are derived
+  # from measured raw->mV points, targeting 2850 mV: the centre of the
+  # 2600..3100 mV window that arms the cutoff (margin +/- 0.034 in position).
+  - set-control:
+      part-id: batt
+      control: position
+      value: 0.3848
+  - wait-serial: 'Low voltage counter: 1/10'
+  - wait-serial: 'Low voltage detected, trigger deep sleep'

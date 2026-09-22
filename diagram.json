@@ -13,11 +13,50 @@
         "psramSize": "2",
         "psramType": "quad"
       }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "batt",
+      "top": 0,
+      "left": 200,
+      "attrs": {
+        "value": "540"
+      }
     }
   ],
   "connections": [
-    ["esp:TX", "$serialMonitor:RX", "", []],
-    ["esp:RX", "$serialMonitor:TX", "", []]
+    [
+      "esp:TX",
+      "$serialMonitor:RX",
+      "",
+      []
+    ],
+    [
+      "esp:RX",
+      "$serialMonitor:TX",
+      "",
+      []
+    ],
+    [
+      "batt:VCC",
+      "esp:3V3.1",
+      "red",
+      []
+    ],
+    [
+      "batt:GND",
+      "esp:GND.1",
+      "black",
+      []
+    ],
+    [
+      "batt:SIG",
+      "esp:1",
+      "green",
+      []
+    ]
   ],
-  "serialMonitor": { "display": "always" }
+  "serialMonitor": {
+    "display": "always"
+  }
 }
