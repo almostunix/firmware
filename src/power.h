@@ -4,8 +4,14 @@
 #include "configuration.h"
 
 #ifdef ARCH_ESP32
-// "legacy adc calibration driver is deprecated, please migrate to use esp_adc/adc_cali.h and esp_adc/adc_cali_scheme.h
-#include <esp_adc_cal.h>
+// esp_adc/* rather than the legacy driver/adc.h + esp_adc_cal.h pair. Both are
+// still shipped on IDF 5.5, but Arduino core 3.x implements analogRead() on top
+// of adc_oneshot, and ESP-IDF does not support the legacy and current ADC
+// drivers coexisting in one application -- whichever claims the unit second
+// fails. soc/adc_channel.h stays: that is where variants get ADC1_GPIOn_CHANNEL.
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
+#include <esp_adc/adc_oneshot.h>
 #include <soc/adc_channel.h>
 #endif
 

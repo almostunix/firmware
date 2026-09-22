@@ -9,7 +9,10 @@
 #include <vector>
 
 #ifdef ARCH_ESP32
+#include <esp_heap_caps.h>
+#include <esp_rom_sys.h>
 #include <esp_pthread.h>
+#include <esp_vfs_eventfd.h>
 #endif
 
 namespace tailscale_shim
@@ -184,17 +187,77 @@ static void writerLoop(std::shared_ptr<ConnState> st)
  * threads it creates, so this must run on the thread doing the spawning,
  * immediately before it.
  */
-static void setThreadStack(size_t bytes, const char *name)
+// Stack sizes, in bytes. Starting points sized for the rustls + p384 handshake
+// being the deepest consumer, to be tuned against the internal-DRAM figures
+// logged at bring-up and uxTaskGetStackHighWaterMark on hardware.
+static constexpr size_t TS_TOKIO_STACK = 32 * 1024;
+static constexpr size_t TS_BRINGUP_STACK = 24 * 1024;
+static constexpr size_t TS_IO_STACK = 8 * 1024;
+
+/// Report internal-DRAM headroom. Thread stacks come from here, and how much is
+/// left depends on what else has started (WiFi, mDNS, two web servers), so the
+/// sizes above are only defensible next to a measurement.
+static void logInternalHeap(const char *when)
+{
+#ifdef ARCH_ESP32
+    // esp_rom_printf, not TS_LOG_INFO. The deferred queue is drained by the
+    // scheduler, so anything logged through it is lost when the point of
+    // logging is immediately followed by an abort -- which is exactly the case
+    // this measurement exists to diagnose. esp_rom_printf goes straight to the
+    // UART and is safe from any thread.
+    esp_rom_printf("Tailscale: internal DRAM %s: %u free, %u largest block\n", when,
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+#else
+    (void)when;
+#endif
+}
+
+/**
+ * Where a thread's stack is allocated from.
+ *
+ * Internal DRAM is scarce -- by the time the tailnet comes up, WiFi, mDNS and
+ * two web servers have taken most of the ~220KB the chip starts with, and
+ * pthread_create fails with ENOMEM (tokio reports "OS can't spawn worker
+ * thread: Not enough space" and panics, which aborts the node).
+ *
+ * PSRAM has ~2MB free and the board sets CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY,
+ * but a stack there carries a hard restriction: a task running on an external
+ * stack must never be the one that disables the flash cache. Any SPI flash
+ * write does that, so a thread touching LittleFS trips
+ *
+ *   assert failed: spi_flash_disable_interrupts_caches_and_other_cpu
+ *                  (esp_task_stack_is_sane_cache_disabled())
+ *
+ * So: threads that do file I/O get Internal, threads that only do network and
+ * compute get Psram.
+ */
+enum class StackMem { Internal, Psram };
+
+/**
+ * Configure the stack for threads created *after* this call.
+ *
+ * esp_pthread_set_cfg applies to the calling thread and is inherited by threads
+ * it creates -- it does not move the caller's own stack, which is already
+ * allocated. That is what lets the bring-up thread keep an internal stack for
+ * its LittleFS access while handing PSRAM stacks to the tokio workers it
+ * spawns moments later.
+ */
+static void setThreadStack(size_t bytes, const char *name, StackMem where)
 {
 #ifdef ARCH_ESP32
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
     cfg.stack_size = bytes;
     cfg.thread_name = name;
+    // MALLOC_CAP_8BIT is required either way: a task stack must be byte-accessible.
+    cfg.stack_alloc_caps =
+        (where == StackMem::Psram) ? (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     cfg.inherit_cfg = true;
     esp_pthread_set_cfg(&cfg);
 #else
     (void)bytes;
     (void)name;
+    (void)where;
 #endif
 }
 
@@ -211,7 +274,7 @@ std::shared_ptr<TailscaleConn> TailscaleConn::create(ts_tcp_stream *stream)
     // Detached on purpose: neither worker can be interrupted while parked in a
     // blocking ts_ffi call, so joining them would be a hang waiting to happen.
     // Their `shared_ptr<ConnState>` copies keep the state valid regardless.
-    setThreadStack(8 * 1024, "ts_io");
+    setThreadStack(TS_IO_STACK, "ts_io", StackMem::Internal);
     std::thread(readerLoop, conn->st).detach();
     std::thread(writerLoop, conn->st).detach();
 
@@ -430,7 +493,7 @@ void TailscaleServer::begin()
     // that delay would be a watchdog reset rather than just a late boot.
     // The bring-up thread runs the tailnet join, which goes through the TLS
     // handshake, so it needs the deepest stack of the three.
-    tailscale_shim::setThreadStack(32 * 1024, "ts_bringup");
+    tailscale_shim::setThreadStack(tailscale_shim::TS_BRINGUP_STACK, "ts_bringup", tailscale_shim::StackMem::Internal);
     std::thread(bringUpLoop, accepting).detach();
 }
 
@@ -520,10 +583,56 @@ void configure(const std::string &stateFile, const std::string &authKey, const s
     gHostname = hostname;
 }
 
+/**
+ * Register the eventfd VFS, which tokio's IO driver needs to exist.
+ *
+ * tokio builds a waker out of an eventfd. On Linux that syscall is always
+ * there; on ESP-IDF eventfd is a VFS driver that nothing registers for you, so
+ * eventfd() fails with EACCES and *runtime construction itself* fails. What
+ * surfaced was a Rust panic inside LazyLock<Runtime> with
+ * `Os { code: 13, kind: PermissionDenied }` -- which names neither eventfd nor
+ * tokio, and aborts the node into a reboot loop because a panic on a detached
+ * thread takes the whole process down.
+ *
+ * Registering is idempotent from our side: a second call returns
+ * ESP_ERR_INVALID_STATE, which is not an error for us. max_fds is the default
+ * 5; tokio needs one.
+ */
+static void registerEventFd()
+{
+#ifdef ARCH_ESP32
+    static std::once_flag once;
+    std::call_once(once, [] {
+        esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
+        esp_err_t err = esp_vfs_eventfd_register(&cfg);
+        if (err == ESP_OK)
+            TS_LOG_INFO("Tailscale: registered eventfd VFS for the tokio runtime");
+        else if (err == ESP_ERR_INVALID_STATE)
+            TS_LOG_INFO("Tailscale: eventfd VFS already registered");
+        else
+            TS_LOG_ERROR("Tailscale: eventfd VFS registration failed (%d) -- the tokio "
+                         "runtime will fail to start",
+                         (int)err);
+    });
+#endif
+}
+
 bool begin()
 {
     if (gDevice)
         return true;
+
+    // Must precede every ts_ffi call: the first one to touch TOKIO_RUNTIME
+    // forces the LazyLock, and that is where the eventfd is needed.
+    registerEventFd();
+
+    // Internal, not PSRAM, and not obviously so. tailscale-rs reaches the key
+    // state through tokio::fs, which dispatches to the blocking pool rather
+    // than running on the calling thread -- so it is a *tokio* thread that ends
+    // up disabling the flash cache, and a PSRAM stack there asserts exactly as
+    // it would here. Measured against the numbers logged just below.
+    tailscale_shim::logInternalHeap("before tokio runtime");
+    tailscale_shim::setThreadStack(tailscale_shim::TS_TOKIO_STACK, "ts_tokio", tailscale_shim::StackMem::Internal);
 
     ts_init_tracing();
 
