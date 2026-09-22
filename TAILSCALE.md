@@ -105,13 +105,17 @@ Two operational findings worth keeping:
   restarting it from the same working directory rejoined the same tailnet IP in
   about a second, with no registration round-trip. Keep that file and testing
   does not need a fresh key each run.
-- **`--sendtext` intermittently reports `Broken pipe`, on both transports.**
-  Over 5 runs each with the same binary: 5/5 against the stock LAN listener on
-  `127.0.0.1:4403`, 3/5 against the tailnet listener. Since the LAN path
-  contains none of this shim's code, the shim is not the cause — but it is not
-  immune either, and an earlier 0/3 reading on the tailnet was small-sample
-  luck. Reads like a client-teardown race that loopback triggers more reliably.
-  Noted, not chased.
+- **`--sendtext` prints `Broken pipe` -- a race inside the Python CLI, not
+  this code.** Corrected 2026-09-22; the original note here had it backwards.
+  Counting the error text rather than exit codes: 8/8 on loopback with
+  Tailscale *disabled*, 7/8 with it enabled, 3/8 over the tailnet, and every
+  run exits 0 with the message delivered. When the config download completes,
+  the CLI's reader thread starts a heartbeat and sends it at once; for a
+  one-shot command the main thread has already half-closed the socket
+  (`shutdown(SHUT_WR)` in `TCPInterface.close`), so that write gets EPIPE. The
+  faster the path, the more often the heartbeat loses, which is why loopback
+  looked worse, not better. Harmless; an upstream CLI issue if anyone wants to
+  report it.
 
 ## Building
 
