@@ -322,6 +322,8 @@ void configure(const std::string &stateFile, const std::string &authKey, const s
 /// it off the scheduler thread. Idempotent; true only once the node is
 /// actually registered and holds a tailnet IPv4.
 bool begin();
+/// Tear down the device, if any, so `begin()` can start over.
+void end();
 /// The device, or nullptr if `begin()` has not succeeded.
 ts_device *device();
 /// This node's tailnet IPv4 as a dotted quad, or empty if not joined.

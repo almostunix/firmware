@@ -3,6 +3,7 @@
 #ifdef MESHTASTIC_TAILSCALE
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <thread>
@@ -209,7 +210,9 @@ static constexpr size_t TS_TOKIO_STACK = 64 * 1024;
 // loopTask never ran, and the 90s task watchdog reset the chip. At equal
 // priority FreeRTOS time-slices each 1 ms tick, so Tailscale work can slow the
 // mesh down but never stop it.
-static constexpr UBaseType_t TS_THREAD_PRIORITY = 1;
+#ifdef ARCH_ESP32
+static constexpr size_t TS_THREAD_PRIORITY = 1; // esp_pthread_cfg_t::prio is a size_t
+#endif
 static constexpr size_t TS_BRINGUP_STACK = 48 * 1024;
 static constexpr size_t TS_IO_STACK = 24 * 1024;
 
@@ -558,25 +561,40 @@ void TailscaleServer::begin()
 
 void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
 {
-    if (!TailscaleTransport::begin())
-        return; // it has already logged why
+    // Retry until the listener is up, rather than giving up after one failure.
+    // This used to return on the first error, so a single failed step -- or a
+    // control reconnect misread as a rejection -- left the node off the tailnet
+    // until reboot. Backoff 5s doubling to 5 minutes: generous enough not to
+    // spend a battery node's charge on a network that is down, short enough to
+    // come back without anyone noticing.
+    for (uint32_t attempt = 1; as->running.load(); attempt++) {
+        if (TailscaleTransport::begin()) {
+            ts_device *dev = TailscaleTransport::device();
 
-    ts_device *dev = TailscaleTransport::device();
+            ts_sockaddr addr = {};
+            addr.sa_family = TS_AF_INET;
+            addr.sa_data.sockaddr_in.sin_port = static_cast<uint16_t>(as->port);
+            if (ts_ipv4_addr(dev, &addr.sa_data.sockaddr_in.sin_addr) == 0) {
+                ts_tcp_listener *listener = ts_tcp_listen(dev, &addr);
+                if (listener) {
+                    as->listener = listener;
+                    break;
+                }
+                TS_LOG_ERROR("Tailscale: listen on port %d failed", as->port);
+            } else {
+                TS_LOG_ERROR("Tailscale: no tailnet IPv4 assigned, not listening");
+            }
+            TailscaleTransport::end();
+        }
 
-    ts_sockaddr addr = {};
-    addr.sa_family = TS_AF_INET;
-    addr.sa_data.sockaddr_in.sin_port = static_cast<uint16_t>(as->port);
-    if (ts_ipv4_addr(dev, &addr.sa_data.sockaddr_in.sin_addr) != 0) {
-        TS_LOG_ERROR("Tailscale: no tailnet IPv4 assigned, not listening");
-        return;
+        const uint32_t delay = std::min<uint32_t>(5u << std::min<uint32_t>(attempt - 1, 6), 300);
+        TS_LOG_WARN("Tailscale: bring-up attempt %u failed, retrying in %us", (unsigned)attempt, (unsigned)delay);
+        for (uint32_t i = 0; i < delay && as->running.load(); i++)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    ts_tcp_listener *listener = ts_tcp_listen(dev, &addr);
-    if (!listener) {
-        TS_LOG_ERROR("Tailscale: listen on port %d failed", as->port);
-        return;
-    }
-    as->listener = listener;
+    if (!as->listener)
+        return; // shutting down
 
     TS_LOG_INFO("Tailscale: API server listening on %s:%d", TailscaleTransport::ipv4().c_str(), as->port);
 
@@ -734,15 +752,26 @@ bool begin()
     // an empty IP and the real cause was buried in Rust-side tracing.
     const std::string addr = ipv4();
     if (addr.empty()) {
-        TS_LOG_ERROR("Tailscale: registered no tailnet IP -- control server rejected this node. "
-                  "Check that authkey is valid and not already spent (RUST_LOG=info for the reason)");
-        ts_deinit(gDevice);
-        gDevice = nullptr;
+        // Reached only on a non-transient error now: ts_ipv4_addr waits through
+        // control reconnects. This used to say the control server had rejected
+        // the node, which was also what a reconnect in progress looked like --
+        // and tearing down there killed the reconnection. The cause, bad key
+        // included, is in the tailscale-rs log line just before this one.
+        TS_LOG_ERROR("Tailscale: could not obtain a tailnet address (cause in the tailscale-rs log above)");
+        end();
         return false;
     }
 
     TS_LOG_INFO("Tailscale: joined tailnet as %s (%s)", gHostname.c_str(), addr.c_str());
     return true;
+}
+
+void end()
+{
+    if (gDevice) {
+        ts_deinit(gDevice);
+        gDevice = nullptr;
+    }
 }
 
 ts_device *device()
