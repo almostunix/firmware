@@ -297,6 +297,62 @@ Net: QEMU is the right *local* tool and is installed, but booting Meshtastic in 
 is its own project. Wokwi (cloud, token, throwaway tailnet) or hardware remain the
 practical routes.
 
+## Running it in Wokwi
+
+Wokwi is the cloud simulator; `wokwi-cli` is at `~/.local/bin` (v0.27.1, arm64).
+Two secrets are needed and neither may be pasted into a chat or a shell command:
+
+    # Wokwi CI token -- from wokwi.com/dashboard/ci
+    read -rs "TOK?Wokwi CI token: " && (umask 077; printf 'export WOKWI_CLI_TOKEN=%s\n' "$TOK" > .wokwi-env) && unset TOK
+
+    # Tailnet auth key -- ephemeral, single-use, on a tailnet you can throw away
+    read -rs "KEY?Tailscale auth key: " && (umask 077; { echo "authkey=$KEY"; echo "hostname=meshtastic-wokwi"; } > data/prefs/tailscale.conf) && unset KEY
+
+Both paths are gitignored. `read` keeps the value off the command line, so it
+never reaches shell history.
+
+Then:
+
+    pio run -e heltec-v4-tailscale-wokwi -t buildfs   # config -> LittleFS image
+    pio run -e heltec-v4-tailscale-wokwi              # app + merge + stage
+    . ./.wokwi-env && ~/.local/bin/wokwi-cli --timeout 180000 .
+
+### Why firmware.bin is a full 15.9MB flash image
+
+`wokwi-cli` writes a single blob at offset 0 and has no option for extra flash
+regions. The auth key lives in `/prefs/tailscale.conf` on LittleFS, so
+`extra_scripts/wokwi_stage.py` merges the filesystem image into the factory
+image at the `spiffs` offset, padding the gap with 0xFF (erased NOR flash).
+
+The offset is read from the partition table *inside the factory image* rather
+than from the CSV, so it cannot drift from the table the device actually boots.
+Verified: superblock at 0xC90000, `authkey=` at 0xCD4020, total 0xFF0000.
+
+If Wokwi rejects a 15.9MB upload, the fix is a simulator-only partition table
+that places `spiffs` immediately after the app (~6.8MB total) -- not a change to
+the merge logic.
+
+### Do not hand-build the LittleFS image
+
+PlatformIO's `tool-mklittlefs` is an x86_64 binary and will not exec directly on
+an arm64 Mac ("bad CPU type"), though it runs fine under the build. Do not
+reach for `littlefs-python` instead: the framework ships precompiled libs with
+no `lfs.h`, so the on-disk parameters are not discoverable from source, and a
+mismatched superblock mounts as corrupt and is silently reformatted -- which
+looks exactly like a missing config while burning a simulator run and a
+single-use key. Use `-t buildfs` and let the toolchain do it.
+
+For the record, read out of a generated superblock: disk version 0x00020001,
+block_size 4096, block_count 864, name_max 64 (not the 255 default), file_max
+0x7FFFFFFF, attr_max 1022.
+
+### Sequence the runs to protect the key
+
+An ephemeral key is single-use. Run once with a deliberately invalid key first:
+an auth rejection from the control plane proves boot, WiFi association, config
+parsing and the join attempt all work, and costs nothing. Only then write the
+real key.
+
 ## Known gaps
 
 - **No shutdown primitive in ts_ffi.** Nothing can interrupt a thread parked in

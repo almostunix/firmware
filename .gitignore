@@ -61,3 +61,11 @@ userPrefs.jsonc.mcp-session-bak
 # secrets -- tailscale_keys.json holds the node's private key material.
 tailscale.conf
 tailscale_keys.json
+
+# Wokwi CI token. Secret: grants simulation runs against the account that
+# issued it. Written by hand (never echoed), sourced before wokwi-cli.
+.wokwi-env
+
+# Tailscale config staged into the LittleFS image for simulator/board runs.
+# Same secret as /prefs/tailscale.conf on the device -- never commit it.
+data/prefs/tailscale.conf
