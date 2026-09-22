@@ -198,8 +198,44 @@ static void writerLoop(std::shared_ptr<ConnState> st)
 // Everything else only touches sockets, so it lives in PSRAM with room to
 // spare. None of these are high-water-mark measurements yet.
 static constexpr size_t TS_TOKIO_STACK = 64 * 1024;
+
+// FreeRTOS priority for every Tailscale thread, and everything tokio spawns.
+//
+// Equal to Arduino's loopTask (created at priority 1 in cores/esp32/main.cpp),
+// which runs all of Meshtastic. pthreads default to 5
+// (CONFIG_PTHREAD_TASK_PRIO_DEFAULT), and under FreeRTOS a busy higher-priority
+// task starves lower ones outright -- observed when a real tailnet join made
+// tailscale-rs probe every DERP region at once: ts_tokio held CPU 1 for ~94s,
+// loopTask never ran, and the 90s task watchdog reset the chip. At equal
+// priority FreeRTOS time-slices each 1 ms tick, so Tailscale work can slow the
+// mesh down but never stop it.
+static constexpr UBaseType_t TS_THREAD_PRIORITY = 1;
 static constexpr size_t TS_BRINGUP_STACK = 48 * 1024;
 static constexpr size_t TS_IO_STACK = 24 * 1024;
+
+#ifdef MESHTASTIC_SIMULATOR_NO_LORA
+#include <lwip/sockets.h>
+/// SIMULATOR DIAGNOSTIC: how many lwIP sockets are free right now, found by
+/// opening UDP sockets until the table is full and closing them again. The
+/// Arduino libs cap lwIP at 16 sockets (CONFIG_LWIP_MAX_SOCKETS), shared with
+/// Meshtastic's API server, web servers, mDNS and NTP -- and a real tailnet
+/// join exhausted them. Briefly holds every free socket, so anything else that
+/// opens one in that instant fails: fine for a diagnostic build, not for a node.
+static int countFreeSockets()
+{
+    int fds[32];
+    int n = 0;
+    while (n < 32) {
+        int fd = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0)
+            break;
+        fds[n++] = fd;
+    }
+    for (int i = 0; i < n; i++)
+        lwip_close(fds[i]);
+    return n;
+}
+#endif
 
 /// Report internal-DRAM headroom. Thread stacks come from here, and how much is
 /// left depends on what else has started (WiFi, mDNS, two web servers), so the
@@ -257,6 +293,7 @@ static void setThreadStack(size_t bytes, const char *name, StackMem where)
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
     cfg.stack_size = bytes;
     cfg.thread_name = name;
+    cfg.prio = TS_THREAD_PRIORITY;
     // MALLOC_CAP_8BIT is required either way: a task stack must be byte-accessible.
     cfg.stack_alloc_caps =
         (where == StackMem::Psram) ? (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -658,6 +695,9 @@ bool begin()
     // inherit_cfg carries this to threads tokio's own threads spawn later
     // (the blocking pool, for DNS), which also never touch flash.
     tailscale_shim::logInternalHeap("before tokio runtime");
+#ifdef MESHTASTIC_SIMULATOR_NO_LORA
+    esp_rom_printf("Tailscale: lwIP sockets free before tailnet start: %d\n", tailscale_shim::countFreeSockets());
+#endif
     tailscale_shim::setThreadStack(tailscale_shim::TS_TOKIO_STACK, "ts_tokio", tailscale_shim::StackMem::Psram);
 
     ts_init_tracing();

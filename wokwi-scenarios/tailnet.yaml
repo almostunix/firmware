@@ -10,9 +10,15 @@ steps:
   - wait-serial: 'Tailscale: joined tailnet as'
   - wait-serial: 'Tailscale: API server listening on'
 
-  # Hold the node up so a client can connect over the tailnet
+  # Hold the node up so bin/wokwi-tailnet-probe.sh can connect over the tailnet
   # (meshtastic --host <tailnet ip> --info) before the battery test ends it.
-  - delay: 60s
+  #
+  # A ceiling, not a cost: with PROBE_STOP_ON_SUCCESS=1 the probe ends the run
+  # as soon as --info succeeds. It has to be generous because the node is only
+  # reachable once it has measured, connected to and advertised a home DERP
+  # region -- which happens *after* "API server listening". 45s was not enough
+  # to see whether that ever happens.
+  - delay: 90s
 
   # Position chosen for Wokwi's ADC, not real silicon. Measured: Wokwi maps the
   # pin voltage linearly onto 0..4095 regardless of attenuation (position

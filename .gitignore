@@ -72,3 +72,6 @@ data/prefs/tailscale.conf
 
 # gcc dependency files from ad-hoc -fsyntax-only checks run in the repo root
 /a-*.d
+
+# Local meshtastic CLI for the simulator tailnet probe
+/.venv-meshtastic/

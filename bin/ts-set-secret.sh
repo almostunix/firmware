@@ -33,6 +33,10 @@ IFS= read -r VALUE || true
 stty echo 2>/dev/null || true
 printf '\n' >&2
 
+# Trim leading/trailing whitespace: a paste often carries a trailing newline
+# or space, and no key ever contains whitespace.
+VALUE=$(printf '%s' "$VALUE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
 len=$(printf '%s' "$VALUE" | wc -c | tr -d ' ')
 
 if [ "$len" -eq 0 ]; then
