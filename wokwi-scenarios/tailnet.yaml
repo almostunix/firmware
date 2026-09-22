@@ -17,8 +17,9 @@ steps:
   # as soon as --info succeeds. It has to be generous because the node is only
   # reachable once it has measured, connected to and advertised a home DERP
   # region -- which happens *after* "API server listening". 45s was not enough
-  # to see whether that ever happens.
-  - delay: 90s
+  # to see whether that ever happens. On an ESP32 the node measures every DERP
+  # region three at a time first (up to a 60s deadline), then connects.
+  - delay: 150s
 
   # Position chosen for Wokwi's ADC, not real silicon. Measured: Wokwi maps the
   # pin voltage linearly onto 0..4095 regardless of attenuation (position

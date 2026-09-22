@@ -9,7 +9,76 @@ transport, so `TailscaleServerAPI` contains no protocol logic — a client
 reaching the node over Tailscale talks to the same API implementation it would
 reach over the LAN. PhoneAPI and StreamAPI are untouched.
 
-## Status: Phase 1 complete, Phase 2 native hardening validated
+## Status as of 2026-09-22 (paused here)
+
+### Proven
+
+**Native build** (`meshtasticd -s` on macOS, against the real control server;
+`bin/native-tailnet-test.sh`):
+
+- Join, home relay advertised, and `meshtastic --info` over the tailnet within
+  seconds.
+- Reconnection, via the `TS_TEST_*` fault-injection hooks: forced dial failures
+  recover with 1/2/4/8 s backoff and kameo never gives up; forced dead map
+  streams reconnect, with `--info` succeeding 6/6 across 4 reconnects and a
+  steady socket count. The production 180 s stream idle limit ran 7 minutes at
+  170 s with zero false reconnects.
+- Relay selection under the ESP-IDF probe cap: all 28 regions measured, three at
+  a time, and the lowest-latency region chosen. With regions 1-3 forced to hang,
+  the other 25 are still measured and a relay is advertised at 29 s. Before the
+  fix, that case never produced one.
+
+**ESP32-S3 in Wokwi** (`bin/wokwi-run.sh`):
+
+- Boot, 2 MB PSRAM, partition table, LittleFS, WiFi, DHCP, mDNS, stock API.
+- The tokio runtime and key state on target; a full control-plane handshake
+  (TLS, Noise, HTTP/2); two real joins with addresses assigned.
+- Meshtastic's main loop keeps running while Tailscale is wedged: a 5-minute
+  join hang, no watchdog reset.
+- Battery: the ADC port reads within 17 mV of target, USB-vs-battery inference
+  is right, and the low-voltage cutoff fires, including with Tailscale up.
+- The reconnection logic on target: failed dials back off 1, 2, 4 s and retry,
+  and `ts_ipv4_addr` waits instead of tearing the runtime down.
+
+### Open, in priority order
+
+1. **Control dials fail in Wokwi since Rust logging moved to stderr.** Runs 1-2
+   joined; runs 3-4, the first builds with `with_writer(std::io::stderr)` and
+   the only firmware difference, fail every dial the same way: TCP "connects",
+   the request is sent, and ~36 s later `Socket is not connected` (roughly
+   lwIP's SYN retry limit). Seven attempts in a row, so not random. No
+   mechanism identified -- only ~3 log lines are written during a dial -- and an
+   environmental cause is equally live (Wokwi's gateway is shared by all its
+   users; Tailscale may be throttling it after today's registrations). **The
+   hardware build has the same logging change.** Next step is an A/B, cheapest
+   on the board: (A) as built, (B) Rust logs through `esp_rom_output_to_channels`
+   (the primitive under `esp_rom_printf`, which works), or back on stdout.
+2. **No ESP32 node has been reachable from a peer yet.** No ESP32 run has
+   reached "home relay advertised". The likely cause, stalled probes holding
+   every permit under the cap, is fixed and verified natively only.
+3. The first `meshtastic --info` after ~150 s idle times out and the retry 2 s
+   later succeeds, reproducibly. Same flakiness as Phase 1, predates this work.
+   Unexplained; a WireGuard re-handshake through the relay is a guess.
+4. Stack sizes are budget-fitted, not high-water-mark measured
+   (`uxTaskGetStackHighWaterMark`), especially through a TLS handshake.
+5. Battery accuracy against a real cell: check the reported voltage with a
+   multimeter, on USB with no cell, before trusting the cutoff.
+6. Production: the OTA partition table; and the socket budget -- 12 of lwIP's
+   16 are free when Tailscale starts, with Meshtastic's two web servers the
+   obvious candidates if more are needed.
+
+Wokwi minutes spent: see `.pio/wokwi-logs/ledger.tsv` (46.2 min over 8 runs as
+of this writing; 9.4 of those went on one crash loop before the harness
+learned to catch resets).
+
+### Secrets left on disk
+
+The simulator's auth key is in `data/prefs/tailscale.conf` and in every
+filesystem and flash image built since (under `.pio/`). All gitignored. Delete
+the key in the Tailscale admin console when done; the ephemeral
+`meshtastic-wokwi*` and `meshtastic-native-test*` nodes remove themselves.
+
+## Phase 1 verification (2026-09-21)
 
 Verified end to end on 2026-09-21: `meshtastic --host 100.x.y.z:4403 --info`,
 `--nodes` and `--sendtext` all work against `meshtasticd -s`, over DERP, with
@@ -401,7 +470,7 @@ CPU. Runs land at 144-148s uptime when the cap hits -- the tailnet join is just
 past the edge, and which side of it a run falls on is decided by load on
 Wokwi's shared infrastructure, not by anything in the firmware.
 
-So the join itself was never exercised here. Do not spend more time on it:
+So the join itself was never exercised here -- at the time. It later was: see the status section at the top. Do not spend more time on it:
 hardware has a real SX1262, no time cap, no throttling, and no monitored
 gateway -- which also means the auth key never crosses an intermediary.
 
@@ -474,17 +543,12 @@ Two things made these findable, and both are worth keeping:
   Deferred logs are drained by the scheduler, so they are lost in exactly the
   situation a crash diagnostic is for.
 
-### Unverified
+### Stack sizes
 
-The 24 KiB tokio stack configuration has never run: the Wokwi CI quota was
-exhausted before it could be tested. Everything through the eventfd fix was
-observed working on an ESP32-S3. The tailnet join itself has not been exercised
-on any target other than the host.
-
-All stack sizes are budget-fitting numbers, not high-water marks. Check them
-with uxTaskGetStackHighWaterMark on hardware -- the rustls + p384 handshake is
-the deepest consumer and the one most likely to overflow a stack that merely
-fits.
+Settled by measurement, not the earlier guesses: tokio's threads get 64 KiB
+from PSRAM (one poll of the runtime's actor startup was measured at ~28.5 KB);
+the bring-up thread gets 48 KiB of internal DRAM because it does the key-state
+flash I/O. None of these are high-water marks yet -- see the status section.
 
 ## Known gaps
 
