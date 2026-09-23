@@ -31,6 +31,18 @@ void variant_shutdown() __attribute__((weak));
 void variant_shutdown() {}
 
 #if !defined(CONFIG_IDF_TARGET_ESP32S2) && !MESHTASTIC_EXCLUDE_BLUETOOTH
+#if __has_include("esp32-hal-alloc-ble-mem.h") // Arduino 3.x
+// Arduino 3.x gives the BLE controller's RAM to the heap at boot unless bleInUse() is true, and NimBLE-Arduino
+// doesn't claim it: starting BLE then corrupted the heap. Claim it; setBluetoothEnable() returns it if BLE goes unused.
+extern "C" bool bleInUse(void)
+{
+    return true;
+}
+#define MESHTASTIC_CLAIMS_BLE_MEMORY 1
+// Our own record: Arduino's btMemReleased() only tracks releases via linker --wrap flags this build doesn't use.
+static bool bleMemoryReleased = false;
+#endif
+
 void setBluetoothEnable(bool enable)
 {
 #if defined(USE_WS5500) || defined(USE_CH390D)
@@ -41,6 +53,12 @@ void setBluetoothEnable(bool enable)
     if (config.bluetooth.enabled == true)
 #endif
     {
+#ifdef MESHTASTIC_CLAIMS_BLE_MEMORY
+        if (bleMemoryReleased) {
+            LOG_ERROR("BLE controller memory was released; not starting Bluetooth");
+            return;
+        }
+#endif
         if (!nimbleBluetooth) {
             nimbleBluetooth = new NimbleBluetooth();
         }
@@ -52,6 +70,14 @@ void setBluetoothEnable(bool enable)
         // BLE advertising automatically stops when MCU enters light-sleep(?)
         // For deep-sleep, shutdown hardware with nimbleBluetooth->deinit(). Requires reboot to reverse
     }
+#ifdef MESHTASTIC_CLAIMS_BLE_MEMORY
+    // BLE stays off until the next reboot (config changes reboot), so return its RAM, unless it ran this boot.
+    else if (!nimbleBluetooth && !bleMemoryReleased) {
+        bleMemoryReleased = true;
+        LOG_INFO("Bluetooth unused this boot, releasing its controller memory");
+        btMemRelease(BT_MODE_BLE);
+    }
+#endif
 }
 #else
 void setBluetoothEnable(bool enable) {}
@@ -166,30 +192,19 @@ void esp32Setup()
 // #define APP_WATCHDOG_SECS 45
 #define APP_WATCHDOG_SECS 90
 
-// ESP-IDF 5 replaced esp_task_wdt_init(timeout, panic) with a config struct.
-// This was previously gated on CONFIG_IDF_TARGET_ESP32C6 -- the first variant
-// moved to an IDF 5 platform -- which made a per-SDK change look like a
-// per-chip one, so any other target on IDF 5 failed to compile. Key it to the
-// SDK version it actually depends on.
-//
-// Also note the old C6 branch malloc'd the config and set only two of three
-// fields, leaving idle_core_mask as heap garbage (and never freeing it). A
-// stack struct with every field set avoids both problems.
+// ESP-IDF 5 takes a config struct; keyed to the SDK version, not the chip.
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     esp_task_wdt_config_t wdt_config = {
         .timeout_ms = APP_WATCHDOG_SECS * 1000,
         .idle_core_mask = 0, // don't subscribe the idle tasks
         .trigger_panic = true,
     };
+#if CONFIG_ESP_TASK_WDT_INIT
+    // IDF already started the TWDT (5 s); a second init fails, so retune the running one.
+    res = esp_task_wdt_reconfigure(&wdt_config);
+#else
     res = esp_task_wdt_init(&wdt_config);
-    // IDF 5 starts the task watchdog itself when CONFIG_ESP_TASK_WDT_INIT is
-    // set, and the Arduino libs set it (with a 5s timeout). A second init then
-    // returns ESP_ERR_INVALID_STATE instead of succeeding, so asserting on
-    // ESP_OK panics in setup() and boot-loops the node -- observed in the
-    // simulator as "TWDT already initialized" followed by the assert at this
-    // line. Reconfigure the running instance to our timeout instead.
-    if (res == ESP_ERR_INVALID_STATE)
-        res = esp_task_wdt_reconfigure(&wdt_config);
+#endif
     assert(res == ESP_OK);
 #else
     res = esp_task_wdt_init(APP_WATCHDOG_SECS, true);

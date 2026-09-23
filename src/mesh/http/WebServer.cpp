@@ -76,7 +76,11 @@ static void handleWebResponse()
         if (isWebServerReady) {
             // Check heap before HTTPS processing - SSL requires significant memory
             if (secureServer) {
+#ifdef MESHTASTIC_MBEDTLS_PSRAM
+                uint32_t freeHeap = ESP.getFreePsram(); // mbedTLS allocates from PSRAM (MbedtlsPsram.cpp)
+#else
                 uint32_t freeHeap = ESP.getFreeHeap();
+#endif
                 if (freeHeap >= MIN_HEAP_FOR_SSL) {
                     secureServer->loop();
                 } else {

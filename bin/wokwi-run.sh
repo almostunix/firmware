@@ -37,6 +37,13 @@ image=".pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.bin"
 if LC_ALL=C grep -aq "PIPELINEPROBE" "$image"; then has_dummy=1; else has_dummy=0; fi
 if LC_ALL=C grep -aq "authkey=tskey-" "$image"; then has_key=1; else has_key=0; fi
 
+# A real board's key must never reach Wokwi's servers (bin/ts-set-secret.sh tailscale-hw).
+if LC_ALL=C grep -aq "target=hardware" "$image"; then
+  echo "refused: the staged image carries a hardware board's Tailscale key. Write a" >&2
+  echo "         simulator key (bin/ts-set-secret.sh tailscale) and rebuild first." >&2
+  exit 1
+fi
+
 if [ "$key_mode" = dry ] && [ "$has_dummy" -ne 1 ]; then
   echo "refused: the staged image does not carry the dummy key. A dry run with a" >&2
   echo "         real single-use key would spend it. Rebuild the filesystem with the" >&2

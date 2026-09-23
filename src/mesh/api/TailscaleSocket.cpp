@@ -9,8 +9,11 @@
 #include <thread>
 #include <vector>
 
+
 #ifdef ARCH_ESP32
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_rom_sys.h>
 #include <esp_pthread.h>
 #include <esp_vfs_eventfd.h>
@@ -197,7 +200,7 @@ static void writerLoop(std::shared_ptr<ConnState> st)
 // it also polls the join future via block_on, so it gets the largest internal
 // stack. Affordable because tokio's stacks are no longer in internal DRAM.
 // Everything else only touches sockets, so it lives in PSRAM with room to
-// spare. None of these are high-water-mark measurements yet.
+// spare. Bring-up measured on a Heltec V4: 16.8 KB used through the join.
 static constexpr size_t TS_TOKIO_STACK = 64 * 1024;
 
 // FreeRTOS priority for every Tailscale thread, and everything tokio spawns.
@@ -213,7 +216,8 @@ static constexpr size_t TS_TOKIO_STACK = 64 * 1024;
 #ifdef ARCH_ESP32
 static constexpr size_t TS_THREAD_PRIORITY = 1; // esp_pthread_cfg_t::prio is a size_t
 #endif
-static constexpr size_t TS_BRINGUP_STACK = 48 * 1024;
+static constexpr size_t TS_BRINGUP_STACK = 32 * 1024; // ~2x measured; freed once the acceptor takes over
+static constexpr size_t TS_ACCEPT_STACK = 16 * 1024;  // PSRAM: accept + spawning connection threads, no flash I/O
 static constexpr size_t TS_IO_STACK = 24 * 1024;
 
 #ifdef MESHTASTIC_SIMULATOR_NO_LORA
@@ -596,8 +600,22 @@ void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
     if (!as->listener)
         return; // shutting down
 
+#ifdef ARCH_ESP32
+    // The join ran on this thread, so this is TS_BRINGUP_STACK's measured peak.
+    esp_rom_printf("Tailscale: bring-up thread stack: %u of %u bytes never used\n",
+                   (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)tailscale_shim::TS_BRINGUP_STACK);
+#endif
+
     TS_LOG_INFO("Tailscale: API server listening on %s:%d", TailscaleTransport::ipv4().c_str(), as->port);
 
+    // Only bring-up touches flash, so the long-lived acceptor runs on a PSRAM stack and this thread's
+    // internal-RAM stack is freed when it returns.
+    tailscale_shim::setThreadStack(tailscale_shim::TS_ACCEPT_STACK, "ts_accept", tailscale_shim::StackMem::Psram);
+    std::thread(acceptLoop, as).detach();
+}
+
+void TailscaleServer::acceptLoop(std::shared_ptr<AcceptState> as)
+{
     while (as->running.load()) {
         ts_tcp_stream *stream = ts_tcp_accept(as->listener);
         if (!stream) {
@@ -611,6 +629,15 @@ void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
 
         auto conn = tailscale_shim::TailscaleConn::create(stream);
         TS_LOG_INFO("Tailscale: incoming connection from %s", conn->remoteAddr().c_str());
+#ifdef ARCH_ESP32
+        static bool reportedAcceptStack = false;
+        if (!reportedAcceptStack) {
+            reportedAcceptStack = true;
+            esp_rom_printf("Tailscale: accept thread stack after first accept: %u of %u bytes never used\n",
+                           (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)tailscale_shim::TS_ACCEPT_STACK);
+            tailscale_shim::logInternalHeap("at first accept");
+        }
+#endif
 
         std::lock_guard<std::mutex> lock(as->mutex);
         as->pending.push_back(std::move(conn));

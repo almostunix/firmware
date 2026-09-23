@@ -10,20 +10,35 @@
 #
 # So this validates before writing, and reports only a verdict -- never a value.
 #
-#   bin/ts-set-secret.sh wokwi       -> .wokwi-env  (export WOKWI_CLI_TOKEN=...)
-#   bin/ts-set-secret.sh tailscale   -> data/prefs/tailscale.conf
+#   bin/ts-set-secret.sh wokwi                  -> .wokwi-env  (export WOKWI_CLI_TOKEN=...)
+#   bin/ts-set-secret.sh tailscale              -> data/prefs/tailscale.conf, simulator node
+#   bin/ts-set-secret.sh tailscale-hw [name]    -> the same file, for a real board: hostname
+#                                                  [name] (default meshtastic-heltec-v4) and a
+#                                                  marker bin/wokwi-run.sh refuses to upload
 #
 # Run it from the firmware root.
 set -eu
 
-usage() { echo "usage: $0 {wokwi|tailscale}" >&2; exit 2; }
-[ $# -eq 1 ] || usage
+usage() { echo "usage: $0 {wokwi|tailscale|tailscale-hw [hostname]}" >&2; exit 2; }
+[ $# -ge 1 ] || usage
+
+hostname=meshtastic-wokwi
+if [ "$1" = tailscale-hw ]; then
+  [ $# -le 2 ] || usage
+  hostname=${2:-meshtastic-heltec-v4}
+  case "$hostname" in
+    ""|-*|*[!a-z0-9-]*) echo "refused: hostname must be lowercase letters, digits and '-'" >&2; exit 2 ;;
+  esac
+  [ ${#hostname} -le 63 ] || { echo "refused: hostname longer than 63 characters" >&2; exit 2; }
+else
+  [ $# -eq 1 ] || usage
+fi
 
 umask 077
 
 case "$1" in
   wokwi)     dest=".wokwi-env"; label="Wokwi CI token" ;;
-  tailscale) dest="data/prefs/tailscale.conf"; label="Tailscale auth key" ;;
+  tailscale|tailscale-hw) dest="data/prefs/tailscale.conf"; label="Tailscale auth key" ;;
   *)         usage ;;
 esac
 
@@ -53,13 +68,21 @@ case "$VALUE" in
     exit 1 ;;
 esac
 
-if [ "$1" = tailscale ]; then
+if [ "$1" != wokwi ]; then
   case "$VALUE" in
+    tskey-*tskey-*)
+       echo "refused: that is more than one key pasted together (length $len). $dest not written." >&2
+       exit 1 ;;
     tskey-*) ;;
     *) echo "refused: a Tailscale auth key starts with 'tskey-' (length $len)." >&2
        echo "         did you paste the Wokwi token here? $dest not written." >&2
        exit 1 ;;
   esac
+  # printf is a shell builtin, so the key reaches grep through the pipe, never argv.
+  if ! printf '%s' "$VALUE" | grep -Eq '^tskey-[a-z]+-[A-Za-z0-9]+-[A-Za-z0-9]+$'; then
+    echo "refused: not shaped like one auth key, tskey-<kind>-<id>-<secret> (length $len). $dest not written." >&2
+    exit 1
+  fi
 else
   case "$VALUE" in
     tskey-*) echo "refused: that is a Tailscale key, not a Wokwi token. $dest not written." >&2
@@ -74,8 +97,9 @@ if [ "$1" = wokwi ]; then
   # anything, even if the validation above is ever loosened.
   printf "export WOKWI_CLI_TOKEN='%s'\n" "$VALUE" > "$dest"
 else
-  { printf 'authkey=%s\n' "$VALUE"
-    printf 'hostname=meshtastic-wokwi\n'; } > "$dest"
+  { [ "$1" = tailscale-hw ] && printf '# target=hardware -- bin/wokwi-run.sh refuses images containing this line\n'
+    printf 'authkey=%s\n' "$VALUE"
+    printf 'hostname=%s\n' "$hostname"; } > "$dest"
 fi
 
 chmod 600 "$dest"

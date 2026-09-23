@@ -302,6 +302,7 @@ class TailscaleServer : public Server
     /// return when the control server rejects the node, which stalled the
     /// whole of meshtasticd's startup when this ran inline.
     static void bringUpLoop(std::shared_ptr<AcceptState> as);
+    static void acceptLoop(std::shared_ptr<AcceptState> as);
 
     int port;
     std::shared_ptr<AcceptState> accepting;

@@ -9,7 +9,7 @@ transport, so `TailscaleServerAPI` contains no protocol logic — a client
 reaching the node over Tailscale talks to the same API implementation it would
 reach over the LAN. PhoneAPI and StreamAPI are untouched.
 
-## Status as of 2026-09-22 (paused here)
+## Status as of 2026-09-22, evening (paused here)
 
 ### Proven
 
@@ -40,24 +40,118 @@ reach over the LAN. PhoneAPI and StreamAPI are untouched.
 - The reconnection logic on target: failed dials back off 1, 2, 4 s and retry,
   and `ts_ipv4_addr` waits instead of tearing the runtime down.
 
+**Heltec V4 hardware** (flashed with flasher.meshtastic.org, 2026-09-23):
+
+- First flash boot-looped ~5 s after every start, with or without Tailscale:
+  `InstrFetchProhibited` at PC 0 inside IDF 5.5's `esp_bt_controller_init`,
+  called from NimBLE-Arduino 1.4.3's `NimBLEDevice::init` when PowerFSM turns
+  Bluetooth on. NimBLE-Arduino 1.4.3 targets IDF 4.4; the Arduino 3.3 libs
+  ship their own NimBLE/controller (`CONFIG_BT_NIMBLE_ENABLED=y`). The zip
+  first flashed with Tailscale was built with `MESHTASTIC_EXCLUDE_BLUETOOTH=1`.
+  `[heltec_v4_base]` now uses NimBLE-Arduino 2.3.7 with `NIMBLE_TWO` and
+  `CONFIG_BT_NIMBLE_EXT_ADV` instead -- the combination m5stack-unitc6l already
+  runs on Arduino 3.x, and `NimbleBluetooth.cpp` already carries the 2.x port.
+  It builds; it has not run on a board yet (shipped as an update-only zip with a
+  no-Bluetooth rollback). Cost: the Tailscale app is back to 6,526,064 of
+  6,553,600 bytes (27.5 KB spare), so the next feature needs the flash trims.
+- Up to that point everything else came up on the real board: LittleFS, the
+  SSD1306 display, the SX1262 (`SX1262 init success`), the L76K GPS, battery
+  ADC calibration, and the task watchdog fix.
+- **Working end to end (no-Bluetooth build):** 24 min stable on USB before WiFi
+  was set; then joined as `meshtastic-heltec-v4` (100.x.y.z), home relay
+  (the nearest) chosen by STUN, and `meshtastic --host 100.x.y.z --info` from
+  another tailnet machine returned the full config in 4 s. Battery ADC steady
+  (3.81-3.86 V, ±5 mV, rising while charging).
+- **TLS on the real chip: 1.7 s** for a full DERP handshake (measured:
+  `elapsed_ms=1716 kind=Full`, mbedTLS ECDSA) -- against 22 s simulated with
+  mbedTLS and 36 s with RustCrypto. Wokwi overstated crypto cost by >10x.
+  Config download over the tailnet after that: ~0.2 s.
+- **Internal RAM diet (no features removed).** Measured internal free with
+  WiFi+Tailscale: v0.1 ~22-31 KB, v0.2 ~37 KB (bring-up stack 48->32 KB). v0.3
+  (built, not yet on the board): the accept loop moves to a PSRAM-stacked
+  thread and the bring-up thread exits (+32 KB); mbedTLS allocates PSRAM-first
+  via `-Wl,--wrap=esp_mbedtls_mem_calloc` (`src/platform/esp32/MbedtlsPsram.cpp`;
+  the original symbol disappears from the image, so every caller is wrapped), and
+  the web server's HTTPS gate checks PSRAM accordingly. Next candidates: lower
+  `malloc`'s internal threshold with `heap_caps_malloc_extmem_enable` (default
+  4096); then a custom-sdkconfig rebuild of the platform libs (WiFi static
+  buffers, IRAM placement, BSS in PSRAM).
+- Harmless, to clean up: `task_wdt: esp_task_wdt_reset(707): task not found`
+  once at boot, a leftover of the watchdog reconfigure.
+- **Bluetooth root cause (both NimBLE versions):** Arduino 3.3's `initArduino()`
+  releases the BLE controller's ~36 KB to the heap at boot unless `bleInUse()` is
+  true; Arduino's own BLE library claims it, NimBLE-Arduino doesn't. Starting BLE
+  later made the controller write its ROM data/bss (`btdm: bss start 0x3fcef180`)
+  into heap-owned memory: a null call with 1.4.3, a TLSF assert in
+  `r_llm_env_init`'s malloc with 2.3.7. Fix (`main-esp32.cpp`): a strong
+  `bleInUse()` returning true, then `setBluetoothEnable()` releases the memory
+  once when BLE goes unused this boot (WiFi on), so WiFi+Tailscale keeps the RAM.
+  Arduino's `btMemReleased()` can't be used: it only tracks releases via linker
+  `--wrap` flags this PlatformIO build doesn't pass. **Works on the board (v0.2):**
+  with WiFi off the phone pairs and connects; with WiFi back on the node rejoins
+  the tailnet (same IP) and `--info` works. Note: an open client.meshtastic.org
+  serial session puts the node in PowerFSM's SERIAL state, which keeps Bluetooth
+  off by (stock) design -- close it before testing Bluetooth.
+- **Bluetooth build flashed via the flasher's Update (2026-09-23):** node kept its
+  identity (same 100.x.y.z), rejoined, `--info` OK, `hasBluetooth=true`.
+  Bluetooth itself not yet exercised (it only starts with WiFi off).
+- **Security, fixed and verified on the board over the tailnet:** the manifest no
+  longer lists the Tailscale files (7 entries, was 9) and XModem reads of
+  `/prefs/tailscale_keys.json`, `/static/../prefs/tailscale_keys.json` and
+  `//prefs/./tailscale.conf` are refused (NAK). Before the fix, any API
+  client -- the WiFi-LAN TCP API on 4403 included -- could download
+  `/prefs/tailscale_keys.json` through Meshtastic's XModem file transfer, which
+  opens any path by name. Also found on the way, both upstream bugs: XModem's
+  cancel removed the last-named file unconditionally, so "request any name,
+  then cancel" deleted it; and the web server's serve, upload and delete
+  handlers built `"/static/" + request` (delete: `"/" + request`), escapable with
+  `..`, which littlefs resolves. Fix: `src/FSPath.h` resolves paths as littlefs
+  does; XModem and the config file manifest refuse `/prefs/tailscale*`
+  (Tailscale builds); cancel removes only a partial upload; the three web
+  handlers are confined to `/static` (all builds). Tested: helper unit test
+  (22 cases), and on the native daemon every read/write/traversal/cancel attack
+  on a fake key file is refused and leaves it intact, while ordinary reads work.
+  The web handlers are LAN-only and not exercised yet.
+
 ### Open, in priority order
 
-1. **Control dials fail in Wokwi since Rust logging moved to stderr.** Runs 1-2
-   joined; runs 3-4, the first builds with `with_writer(std::io::stderr)` and
-   the only firmware difference, fail every dial the same way: TCP "connects",
-   the request is sent, and ~36 s later `Socket is not connected` (roughly
-   lwIP's SYN retry limit). Seven attempts in a row, so not random. No
-   mechanism identified -- only ~3 log lines are written during a dial -- and an
-   environmental cause is equally live (Wokwi's gateway is shared by all its
-   users; Tailscale may be throttling it after today's registrations). **The
-   hardware build has the same logging change.** Next step is an A/B, cheapest
-   on the board: (A) as built, (B) Rust logs through `esp_rom_output_to_channels`
-   (the primitive under `esp_rom_printf`, which works), or back on stdout.
-2. **No ESP32 node has been reachable from a peer yet.** No ESP32 run has
-   reached "home relay advertised". The likely cause, stalled probes holding
-   every permit under the cap, is fixed and verified natively only.
+1. **The relay handshake cannot be shown in Wokwi; it needs the board.**
+   Certificate checks now go to ESP-IDF's mbedTLS (tailscale-rs `6dc039a`,
+   firmware `src/mesh/api/TailscaleMbedtls.cpp`). On the simulated chip the
+   known-answer self-test passes and real chains verify: 4/4 control
+   handshakes, 22.1-22.2 s each, down from 36 s. But Wokwi runs at ~60% of
+   real time (212 s simulated in 345 s), and servers time out in real time,
+   so 22 s simulated is ~35 s to a DERP server, which resets at 30 s
+   (22.08 s). The simulator is also implausibly slow at this maths:
+   the self-test's 9 mbedTLS verifications took 36 s, where the same library
+   on real ESP32-class silicon takes tens to hundreds of ms per signature. So
+   Wokwi can no longer answer this; the board can. Even if the simulator's CPU
+   timing were exact, the handshake is 22 s real time on hardware, under 30.
+   - Earlier attempt, kept for the record: `opt-level = 3` for the RustCrypto
+     curve crates. 2x faster natively, slower in Wokwi (44-45 s), +141 KB.
+     Reverted.
+   - TLS sessions now resume (one shared rustls config). DERP reconnects
+     benefit; control does not -- `controlplane.tailscale.com` resolves to
+     several servers that evidently do not share ticket keys (full handshakes
+     natively too).
+   - Measured stacks, through the join and a full handshake: tokio worker
+     ~40.6 KB of 64 KB; bring-up thread 16.9 KB of 48 KB (internal RAM --
+     could shrink to 32 KB and free 16 KB, once the accept loop has been
+     measured too).
+2. **Relay selection works on the ESP32.** tailscale-rs picked its home region
+   by a full TLS handshake to every region (~28); on one tokio worker those
+   interleaved, all failed, and starved the control connection until it died.
+   Now STUN-first, as the Go client does, with HTTPS (one at a time) only if
+   no region answers UDP. In Wokwi: 26 regions answered within 6 s of the
+   join, the nearest region chosen, and this Mac's netmap showed the node's relay -- a
+   first for the ESP32. Also fixed on the way: an `unwrap()` that crashed the
+   chip when the relay handshake failed, and reconnects wasting a backoff step
+   on each IPv6 dial-plan address (the ESP32 has no IPv6 route). Earlier
+   "control dials fail since the stderr change" (runs 3-4) was environmental:
+   the same firmware joined later, and plain lwIP connects to control and to
+   DERP (by name and by IP) all succeeded in a diagnostic run.
 3. ~~The first `meshtastic --info` after ~2 minutes idle times out.~~ **Fixed
-   2026-09-22** (tailscale-rs `ca9b575`). A WireGuard bug: the responder's
+   2026-09-22** (tailscale-rs `d192047`). A WireGuard bug: the responder's
    replay check never fired (`last_seen_timestamp` was never written, and it
    compared with `<`). A peer that has stopped trusting its best path sends a
    rekey initiation over DERP *and* direct UDP, so it arrives twice; the node
@@ -71,11 +165,15 @@ reach over the LAN. PhoneAPI and StreamAPI are untouched.
    (`uxTaskGetStackHighWaterMark`), especially through a TLS handshake.
 5. Battery accuracy against a real cell: check the reported voltage with a
    multimeter, on USB with no cell, before trusting the cutoff.
-6. Production: the OTA partition table; and the socket budget -- 12 of lwIP's
-   16 are free when Tailscale starts, with Meshtastic's two web servers the
-   obvious candidates if more are needed.
+6. ~~The OTA partition table.~~ **Done 2026-09-23:** `heltec-v4-tailscale` is
+   back on stock `default_16MB.csv`, because flasher.meshtastic.org writes the
+   OTA loader at 0x650000, which lands inside the app on the single-slot
+   layout. The app is 6,513,584 of 6,553,600 bytes (99.4%), so any growth
+   needs the trims under "Flash budget". Still open: the socket budget -- 12
+   of lwIP's 16 are free when Tailscale starts, with Meshtastic's two web
+   servers the obvious candidates if more are needed.
 
-Wokwi minutes spent: see `.pio/wokwi-logs/ledger.tsv` (46.2 min over 8 runs as
+Wokwi minutes spent: see `.pio/wokwi-logs/ledger.tsv` (74.4 min over 13 runs as
 of this writing; 9.4 of those went on one crash loop before the harness
 learned to catch resets).
 

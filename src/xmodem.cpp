@@ -49,6 +49,8 @@
  **********************************************************************************************************************/
 
 #include "xmodem.h"
+#include "FSPath.h"
+#include <algorithm>
 #include "SPILock.h"
 
 #ifdef FSCom
@@ -118,8 +120,17 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
     case meshtastic_XModem_Control_SOH:
     case meshtastic_XModem_Control_STX:
         if ((xmodemPacket.seq == 0) && !isReceiving && !isTransmitting) {
-            // NULL packet has the destination filename
-            memcpy(filename, &xmodemPacket.buffer.bytes, xmodemPacket.buffer.size);
+            // NULL packet has the destination filename; always NUL-terminated, never stale.
+            memset(filename, 0, sizeof(filename));
+            memcpy(filename, &xmodemPacket.buffer.bytes, std::min<size_t>(xmodemPacket.buffer.size, sizeof(filename) - 1));
+#ifdef MESHTASTIC_TAILSCALE
+            if (isTailscaleSecretPath(canonicalFsPath(filename))) {
+                LOG_WARN("XModem: refused %s", filename);
+                memset(filename, 0, sizeof(filename));
+                sendControl(meshtastic_XModem_Control_NAK);
+                break;
+            }
+#endif
 
             if (xmodemPacket.control == meshtastic_XModem_Control_SOH) { // Receive this file and put to Flash
                 spiLock->lock();
@@ -195,15 +206,16 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         isReceiving = false;
         break;
     case meshtastic_XModem_Control_CAN:
-        // Cancel transmission and remove file
+        // Cancel: drop a partial upload only. Removing unconditionally let "request any name, then CAN" delete any file.
         sendControl(meshtastic_XModem_Control_ACK);
         spiLock->lock();
         file.flush();
         file.close();
-
-        FSCom.remove(filename);
+        if (isReceiving)
+            FSCom.remove(filename);
         spiLock->unlock();
         isReceiving = false;
+        isTransmitting = false;
         break;
     case meshtastic_XModem_Control_ACK:
         // Acknowledge Send the next packet

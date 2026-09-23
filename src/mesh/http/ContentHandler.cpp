@@ -13,6 +13,7 @@
 #include "power.h"
 #include "serialization/JSON.h"
 #include <FSCommon.h>
+#include <FSPath.h>
 #include <HTTPBodyParser.hpp>
 #include <HTTPMultipartBodyParser.hpp>
 #include <HTTPURLEncodedBodyParser.hpp>
@@ -353,8 +354,10 @@ void handleFsDeleteStatic(HTTPRequest *req, HTTPResponse *res)
 
     if (params->getQueryParameter("delete", paramValDelete)) {
         std::string pathDelete = "/" + paramValDelete;
+        // littlefs resolves "..", so confine to /static by the path it will actually remove.
+        const bool allowed = fsPathIsWithin(canonicalFsPath(pathDelete.c_str()), "/static");
         concurrency::LockGuard g(spiLock);
-        if (FSCom.remove(pathDelete.c_str())) {
+        if (allowed && FSCom.remove(pathDelete.c_str())) {
 
             LOG_INFO("%s", pathDelete.c_str());
             JSONObject jsonObjOuter;
@@ -401,6 +404,15 @@ void handleStatic(HTTPRequest *req, HTTPResponse *res)
         if (filename == "/static/") {
             filename = "/static/index.html";
             filenameGzip = "/static/index.html.gz";
+        }
+
+        // littlefs resolves "..", so "/static/../prefs/..." would escape /static.
+        if (!fsPathIsWithin(canonicalFsPath(filename.c_str()), "/static") ||
+            !fsPathIsWithin(canonicalFsPath(filenameGzip.c_str()), "/static")) {
+            LOG_WARN("Refused static path %s", filename.c_str());
+            res->setStatusCode(404);
+            res->setStatusText("Not Found");
+            return;
         }
 
         concurrency::LockGuard g(spiLock);
@@ -546,9 +558,13 @@ void handleFormUpload(HTTPRequest *req, HTTPResponse *res)
             return;
         }
 
-        // You should check file name validity and all that, but we skip that to make the core
-        // concepts of the body parser functionality easier to understand.
         std::string pathname = "/static/" + filename;
+        if (!fsPathIsWithin(canonicalFsPath(pathname.c_str()), "/static") || canonicalFsPath(pathname.c_str()) == "/static") {
+            LOG_WARN("Refused upload path %s", pathname.c_str());
+            res->println("<p>Invalid file name.</p>");
+            delete parser;
+            return;
+        }
 
         concurrency::LockGuard g(spiLock);
         // Create a new file to stream the data into

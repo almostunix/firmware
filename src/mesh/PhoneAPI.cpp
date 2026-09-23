@@ -6,6 +6,7 @@
 #include "Channels.h"
 #include "Default.h"
 #include "FSCommon.h"
+#include "FSPath.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "PacketHistory.h"
@@ -89,11 +90,18 @@ void PhoneAPI::handleStartConfig()
             concurrency::LockGuard guard(spiLock);
             filesManifest = getFiles("/", FILES_MANIFEST_LEVELS, FILES_MANIFEST_MAX_COUNT, &filesManifestLimited);
         }
+#ifdef MESHTASTIC_TAILSCALE
+        filesManifest.erase(std::remove_if(filesManifest.begin(), filesManifest.end(),
+                                           [](const meshtastic_FileInfo &f) {
+                                               return isTailscaleSecretPath(canonicalFsPath(f.file_name, sizeof(f.file_name)));
+                                           }),
+                            filesManifest.end());
+#endif
         if (filesManifestLimited) {
-            LOG_WARN("Got %zu files in manifest (limited to %zu entries/depth %u)", filesManifest.size(),
-                     FILES_MANIFEST_MAX_COUNT, static_cast<unsigned>(FILES_MANIFEST_LEVELS));
+            LOG_WARN("Got %u files in manifest (limited to %u entries/depth %u)", static_cast<unsigned>(filesManifest.size()),
+                     static_cast<unsigned>(FILES_MANIFEST_MAX_COUNT), static_cast<unsigned>(FILES_MANIFEST_LEVELS));
         } else {
-            LOG_DEBUG("Got %zu files in manifest", filesManifest.size());
+            LOG_DEBUG("Got %u files in manifest", static_cast<unsigned>(filesManifest.size()));
         }
     } else {
         releaseFilesManifest(filesManifest);
