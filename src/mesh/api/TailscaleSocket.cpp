@@ -2,6 +2,8 @@
 
 #ifdef MESHTASTIC_TAILSCALE
 
+#include "Throttle.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdarg>
@@ -25,7 +27,8 @@ namespace tailscale_shim
 namespace
 {
 std::mutex gLogMutex;
-std::deque<std::pair<LogLevel, std::string>> gLogQueue;
+// A vector, not a deque: libstdc++'s empty deque allocates ~544 bytes, and this is drained every 100 ms.
+std::vector<std::pair<LogLevel, std::string>> gLogQueue;
 /// Bound the queue: a wedged scheduler must not let workers grow it forever.
 constexpr size_t TS_LOG_QUEUE_LIMIT = 64;
 } // namespace
@@ -46,9 +49,11 @@ void deferLog(LogLevel level, const char *format, ...)
 
 void drainDeferredLogs()
 {
-    std::deque<std::pair<LogLevel, std::string>> batch;
+    std::vector<std::pair<LogLevel, std::string>> batch;
     {
         std::lock_guard<std::mutex> lock(gLogMutex);
+        if (gLogQueue.empty())
+            return;
         batch.swap(gLogQueue);
     }
 
@@ -96,7 +101,7 @@ ConnState::~ConnState()
 
 static void readerLoop(std::shared_ptr<ConnState> st)
 {
-    std::vector<uint8_t> chunk(TS_READ_CHUNK);
+    ByteVector chunk(TS_READ_CHUNK);
 
     while (st->running.load()) {
         // Backpressure: park rather than let a stalled consumer grow the
@@ -133,7 +138,7 @@ static void readerLoop(std::shared_ptr<ConnState> st)
 
 static void writerLoop(std::shared_ptr<ConnState> st)
 {
-    std::vector<uint8_t> chunk;
+    ByteVector chunk;
 
     while (true) {
         {
@@ -148,8 +153,9 @@ static void writerLoop(std::shared_ptr<ConnState> st)
                 continue;
             }
 
-            chunk.assign(st->txBuf.begin(), st->txBuf.end());
-            st->txBuf.clear();
+            // Swap rather than copy; the producer refills the emptied buffer, keeping its capacity.
+            chunk.clear();
+            chunk.swap(st->txBuf);
         }
         // Signal *handoff*, not delivery, and do it before sending. StreamAPI
         // calls flush() on the scheduler thread after every packet; waiting
@@ -421,7 +427,17 @@ size_t TailscaleConn::write(const uint8_t *buf, size_t size)
 void TailscaleConn::flush()
 {
     std::unique_lock<std::mutex> lock(st->txMutex);
-    st->txDrained.wait(lock, [&] { return st->txBuf.empty() || !st->peerUp.load(); });
+    const uint32_t start = millis();
+    // Bounded: a writer stuck in ts_tcp_send behind a vanished peer used to hold the mesh loop here indefinitely.
+    while (!st->txBuf.empty() && st->peerUp.load()) {
+        if (!Throttle::isWithinTimespanMs(start, TS_FLUSH_TIMEOUT_MS)) {
+            TS_LOG_WARN("Tailscale: peer took no data for %us, dropping connection", (unsigned)(TS_FLUSH_TIMEOUT_MS / 1000));
+            st->peerUp.store(false);
+            st->txPending.notify_all();
+            break;
+        }
+        st->txDrained.wait_for(lock, std::chrono::milliseconds(100));
+    }
 }
 
 bool TailscaleConn::connected()
@@ -438,7 +454,9 @@ void TailscaleConn::close()
 {
     if (!st)
         return;
-    st->running.store(false);
+    // FIN, so a client the node drops (idle timeout, replaced by a newer one) knows at once rather than at its next write.
+    if (st->running.exchange(false) && st->stream)
+        ts_tcp_shutdown(st->stream);
     st->rxDrained.notify_all();
     st->txPending.notify_all();
     st->txDrained.notify_all();
@@ -559,7 +577,7 @@ void TailscaleServer::begin()
     std::thread(bringUpLoop, accepting).detach();
     // This runs on Meshtastic's main thread, and the pthread config is sticky
     // per thread: without this, any pthread it created later would silently
-    // inherit a 48 KiB internal-DRAM stack.
+    // inherit the bring-up thread's internal-DRAM stack size.
     tailscale_shim::restoreThreadStackDefaults();
 }
 

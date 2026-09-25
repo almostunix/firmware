@@ -10,10 +10,16 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
+
+#ifdef ARCH_ESP32
+#include <esp_heap_caps.h>
+#endif
 
 #include "tailscale.h"
 
@@ -96,6 +102,36 @@ void drainDeferredLogs();
 namespace tailscale_shim
 {
 
+#ifdef ARCH_ESP32
+/// Connection buffers in PSRAM: malloc puts anything under 4 KB in internal RAM, which WiFi needs.
+template <class T> struct PsramAllocator {
+    using value_type = T;
+    PsramAllocator() = default;
+    template <class U> PsramAllocator(const PsramAllocator<U> &) {}
+
+    T *allocate(size_t n)
+    {
+        if (n > SIZE_MAX / sizeof(T))
+            abort(); // what std::allocator does without exceptions
+        void *p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!p)
+            p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_8BIT);
+        if (!p)
+            abort();
+        return static_cast<T *>(p);
+    }
+    void deallocate(T *p, size_t) { heap_caps_free(p); }
+
+    template <class U> bool operator==(const PsramAllocator<U> &) const { return true; }
+    template <class U> bool operator!=(const PsramAllocator<U> &) const { return false; }
+};
+using ByteDeque = std::deque<uint8_t, PsramAllocator<uint8_t>>;
+using ByteVector = std::vector<uint8_t, PsramAllocator<uint8_t>>;
+#else
+using ByteDeque = std::deque<uint8_t>;
+using ByteVector = std::vector<uint8_t>;
+#endif
+
 /// Upper bound on buffered rx bytes per connection. The reader parks once this
 /// is reached and resumes as the scheduler drains it, giving us TCP
 /// backpressure instead of unbounded growth behind a stalled consumer.
@@ -105,6 +141,10 @@ static constexpr size_t TS_RX_BUFFER_LIMIT = 8 * 1024;
 /// an over-full queue reports a short write -- the contract `Print::write`
 /// already has.
 static constexpr size_t TS_TX_BUFFER_LIMIT = 16 * 1024;
+
+/// Longest `flush()` waits for the writer. Past this the peer is treated as gone, like a stalled
+/// lwIP write on the WiFi API; waiting longer would stall the mesh loop toward the 90 s watchdog.
+static constexpr uint32_t TS_FLUSH_TIMEOUT_MS = 5000;
 
 /**
  * State shared between a connection's worker threads and its handles.
@@ -131,12 +171,13 @@ struct ConnState {
 
     std::mutex rxMutex;
     std::condition_variable rxDrained;
-    std::deque<uint8_t> rxBuf;
+    ByteDeque rxBuf;
 
     std::mutex txMutex;
     std::condition_variable txPending;
     std::condition_variable txDrained;
-    std::deque<uint8_t> txBuf;
+    /// Swapped out whole by the writer, so queued bytes are never copied.
+    ByteVector txBuf;
 
     /// Cleared when the peer hangs up or the link errors.
     std::atomic<bool> peerUp{true};
@@ -185,18 +226,9 @@ class TailscaleConn
     /// True while the peer is up or buffered rx data remains unread.
     bool connected();
 
-    /**
-     * Ask the workers to wind down. Safe from any thread; never blocks.
-     *
-     * The socket is not closed here -- see `~ConnState`. Deliberately accepted
-     * consequence: if the peer neither sends nor hangs up, the reader stays
-     * parked in `ts_tcp_recv` and the socket is reclaimed only at process exit.
-     * Upstream's own `tcp_echo.c` has the same shape. The clean fix is a small
-     * addition to our ts_ffi fork -- a `ts_tcp_shutdown(&stream)` issuing
-     * `Command::Close` without consuming the Box, which is what `TcpStream`'s
-     * `Drop` already does -- and it is worth landing before Xtensa, where a
-     * parked thread costs a real stack.
-     */
+    /// Ask the workers to wind down and send the peer a FIN. Safe from any thread; never blocks.
+    /// The socket itself is freed in `~ConnState`, once the reader sees the peer close (or the
+    /// netstack's keep-alive times a vanished peer out).
     void close();
 
     /// Remote endpoint, for logging.
