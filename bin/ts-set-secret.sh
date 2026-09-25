@@ -43,6 +43,7 @@ case "$1" in
 esac
 
 printf '%s: ' "$label" >&2
+trap 'stty echo 2>/dev/null' EXIT INT TERM  # never leave the terminal silent after Ctrl-C
 stty -echo 2>/dev/null || true
 IFS= read -r VALUE || true
 stty echo 2>/dev/null || true
