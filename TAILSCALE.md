@@ -9,6 +9,62 @@ transport, so `TailscaleServerAPI` contains no protocol logic — a client
 reaching the node over Tailscale talks to the same API implementation it would
 reach over the LAN. PhoneAPI and StreamAPI are untouched.
 
+## v1.0 review and v1.1 fixes (2026-09-23)
+
+v1.0 (tag `heltec-v4-v1.0`) is the build that ran stably on the board. A
+line-by-line review of everything this port adds, plus measurements on the
+board over the tailnet, found:
+
+**Measured on the board (v1.0).** API session over DERP: TCP connect 84 ms,
+config complete 526 ms (median of 15). But internal heap fell ~700 bytes per
+API connection and never came back (64.7 KB -> 43.9 KB across ~30
+connections); a bare connect-and-close cost ~300 bytes.
+
+**v1.1 crashed on the board, and why.** It rebooted every time a tailnet
+connection closed: `assert failed: multi_heap_free ... (head != NULL)` from
+`pthread_mutex_destroy` in `~OwnedMutex`. `OwnedMutex` was meant to fix the leak
+above on the theory that libstdc++'s `std::mutex` never destroys its pthread
+mutex. That is true of the generic `gthr-default.h`, but Espressif's
+`os_defines.h` sets `_GTHREAD_USE_MUTEX_INIT_FUNC`, so on this toolchain
+`std::mutex` inits and destroys its own lock, and `OwnedMutex` destroyed it
+twice. Removed; the leak's cause is still unknown. Lessons: check the exact
+multilib's headers, and no fix counts until it has run on the board.
+
+**Fixed in v1.1 (firmware):**
+- `flush()` could hold the mesh loop indefinitely: StreamAPI writes a whole
+  config download in one pass and relies on it for backpressure, and a writer
+  stuck in `ts_tcp_send` behind a vanished phone never returned (watchdog
+  reset at 90 s). Now bounded at 5 s, after which the connection is dropped,
+  as a stalled lwIP write is on the WiFi API.
+- `close()` now sends a FIN (`ts_tcp_shutdown`). Before, a client the node
+  dropped (idle timeout, or replaced by a newer connection) stayed "connected"
+  until its next write.
+- Connection buffers (up to 8 KB rx + 2x16 KB tx) move to PSRAM; malloc put
+  them in internal RAM. TX is double-buffered by swap instead of copied.
+- The deferred-log drain no longer allocates ~544 bytes every 100 ms (an empty
+  libstdc++ deque allocates).
+- `POWER_LOG_ADC_READS` dropped from the board build (bring-up only).
+
+**Fixed in v1.1 (tailscale-rs):**
+- Netstack TCP keep-alive (30 s) and timeout (120 s). Without them a peer that
+  vanishes without FIN/RST held its socket and both shim threads forever
+  (`tcp_liveness` tests: with the stock config a recv on a vanished peer never
+  ends).
+- Netstack TCP buffers 16 KB per direction on ESP-IDF, from 64 KB: each
+  connection, and the spare socket every listener keeps, held 128 KB of PSRAM.
+- Control reconnects reuse the control server's Noise key: one TLS handshake
+  instead of two (~1.9 s of CPU each on the ESP32). Verified live against
+  controlplane.tailscale.com: 1.09 s -> 0.52 s natively.
+- Non-home DERP connections idle out after 60 s (Go's value), not 10 s, which
+  redialed a peer's home region for nearly every burst of traffic.
+- Upstream bug: the control dial plan ignored candidate priority (compared the
+  best candidate with itself).
+
+**Open:** the ~700 bytes lost per API session on v1.0 (~300 for a bare
+connect). Re-measure on the fixed build before chasing it. `tailscale ping --icmp` gets no
+reply (the netstack does not answer echo); TCP is unaffected. Direct
+(non-DERP) paths are upstream "coming soon", so all traffic is relayed.
+
 ## Status as of 2026-09-22, evening (paused here)
 
 ### Proven
