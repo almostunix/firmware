@@ -17,8 +17,8 @@ here only to describe what the software works with, not as the name of this bran
   change remains credited to its author.
 - **tailscale-rs**, by Tailscale Inc and contributors: <https://github.com/tailscale/tailscale-rs>.
   The firmware links a fork of it, based on release `v0.6.1`:
-  <https://github.com/almostunix/tailscale-rs>, branch `heltec-v4`. Tailscale's own history is kept
-  there too.
+  <https://github.com/almostunix/tailscale-rs>, branch `heltec-v4`, included here as the `tailscale-rs`
+  submodule. Tailscale's own history is kept there too.
 - The changes on these branches were written with the help of Claude (Anthropic), as the
   `Co-Authored-By` lines on the commits record. They were reviewed and tested with unit tests and on a
   Heltec V4 over a real tailnet.
@@ -37,21 +37,22 @@ here only to describe what the software works with, not as the name of this bran
   tailscale-rs repository).
 
 If you distribute firmware binaries built from this branch, the GPL requires you to offer the
-corresponding source: this branch and the tailscale-rs commit it was built with, plus the build steps
-in [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md).
+corresponding source: this branch at the commit you built, the tailscale-rs commit its submodule pins,
+and the build steps in [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md).
 
 ## What was changed (2026-09-21 to 2026-09-28)
 
 **Added to Meshtastic:**
-- Tailscale transport: `src/mesh/api/TailscaleSocket.*`, `TailscaleServerAPI.*`, `TailscaleMbedtls.cpp`
+- Tailscale transport: `src/mesh/api/Tailscale*` (server API, socket shim, mbedTLS verifier)
 - mbedTLS allocations in PSRAM: `src/platform/esp32/MbedtlsPsram.cpp`
 - Path checks: `src/FSPath.h`
 - Tests: `test/test_fspath`, `test/test_tailscale_shim`
+- The `tailscale-rs` submodule
 - Scripts and simulator setup: `bin/` (Tailscale, Wokwi and benchmark scripts), `extra_scripts/`,
-  `wokwi*`, `diagram.json`, `partition-table-*.csv`, `tailscale.conf.example`
-- Docs: `TAILSCALE.md`, `TAILSCALE-QUICKSTART.md`, this file
+  `wokwi*`, `diagram.json`, `partition-table-wokwi.csv`, `tailscale.conf.example`
+- Docs: `TAILSCALE.md`, `TAILSCALE-QUICKSTART.md`, `TAILSCALE-CHANGELOG.md`, this file
 
-**Modified in Meshtastic:** `.gitignore`, `README.md`, `src/Power.cpp` and `src/power.h` (battery ADC on
+**Modified in Meshtastic:** `.gitignore`, `.gitmodules`, `README.md`, `src/Power.cpp` and `src/power.h` (battery ADC on
 the ESP-IDF 5 driver), `src/main.cpp`, `src/mesh/InterfacesTemplates.cpp`, `src/mesh/PhoneAPI.cpp`,
 `src/mesh/RadioInterface.cpp` (simulator only), `src/mesh/http/ContentHandler.cpp`,
 `src/mesh/http/WebServer.cpp`, `src/mesh/wifi/WiFiAPClient.cpp`, `src/platform/esp32/main-esp32.cpp`

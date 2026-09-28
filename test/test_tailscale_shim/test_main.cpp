@@ -1,4 +1,4 @@
-// Unit tests for the tailnet connection shim (src/mesh/api/TailscaleSocket.cpp), driven through its
+// Unit tests for the tailnet connection shim (src/mesh/api/TailscaleConn.cpp), driven through its
 // StreamOps seam against a fake peer instead of a live tailnet. Needs pio test -e native-macos-tailscale.
 #include "Arduino.h"
 #include "TestUtil.h"

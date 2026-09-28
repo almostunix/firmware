@@ -23,13 +23,14 @@ servers, because tailscale-rs does not do direct connections yet.
 
 ## 1. Get the source
 
-Both repositories go side by side in one folder. The firmware build expects tailscale-rs at
-`../tailscale-rs-0.6.1`:
+tailscale-rs comes along as a git submodule, pinned to the commit this firmware was tested with:
 
 ```bash
-git clone -b tailscale-heltec-v4 https://github.com/almostunix/firmware firmware
-git clone -b heltec-v4 https://github.com/almostunix/tailscale-rs tailscale-rs-0.6.1
+git clone --recurse-submodules -b tailscale-heltec-v4 https://github.com/almostunix/firmware firmware
+cd firmware
 ```
+
+If you cloned without `--recurse-submodules`, run `git submodule update --init` in the `firmware` folder.
 
 ## 2. Add your Tailscale key
 
@@ -38,10 +39,9 @@ git clone -b heltec-v4 https://github.com/almostunix/tailscale-rs tailscale-rs-0
    - **Ephemeral:** off, or the node disappears from your tailnet whenever it goes offline.
    - **Pre-approved:** on, if your tailnet requires device approval.
    - **Tags:** optional.
-2. From the firmware folder, write the key and choose the node's tailnet name:
+2. From the `firmware` folder, write the key and choose the node's tailnet name:
 
    ```bash
-   cd firmware
    bin/ts-set-secret.sh tailscale-hw my-meshtastic-node
    ```
 
@@ -56,12 +56,11 @@ filesystem, so a spent single-use key is fine. Use a new key only for a node tha
 
 ```bash
 # The Rust library, cross-compiled for the ESP32-S3 (several minutes the first time)
-cd ../tailscale-rs-0.6.1
 . ~/export-esp.sh
-RUSTUP_TOOLCHAIN=esp cargo build -p ts_ffi --release --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+(cd tailscale-rs && RUSTUP_TOOLCHAIN=esp cargo build -p ts_ffi --profile firmware \
+  --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort)
 
 # The firmware, and a filesystem image that carries your key
-cd ../firmware
 pio run -e heltec-v4-tailscale
 pio run -e heltec-v4-tailscale -t buildfs
 ```
@@ -115,7 +114,7 @@ The node appears in the Tailscale admin console under the name you chose. Then:
 
 ## Updating later
 
-Rebuild (steps 3 and 4), then at the flasher upload `my-node-update.zip` and click **Update**. Do not
+Pull, update the submodule (`git submodule update`), rebuild (steps 3 and 4), then at the flasher upload `my-node-update.zip` and click **Update**. Do not
 tick Full Erase: an update keeps the node's settings and its tailnet identity, while a full erase needs a
 new key.
 
@@ -125,6 +124,4 @@ new key.
   tailnet, the LAN address, or USB.
 - **Secrets stay on the node.** The Meshtastic API and the web server refuse to serve, list or overwrite
   `/prefs/tailscale.conf` and the node's Tailscale keys.
-- **Unit tests:** in tailscale-rs, `cargo test`; for the firmware (macOS), build the library for the host
-  with `cargo build -p ts_ffi --release`, then
-  `pio test -e native-macos-tailscale -f test_tailscale_shim -f test_fspath`.
+- **Unit tests:** see "Building and testing" in [TAILSCALE.md](TAILSCALE.md).

@@ -38,7 +38,7 @@ inline bool fsPathIsWithin(const std::string &canonical, const char *dir)
     return canonical.compare(0, n, dir) == 0 && (canonical.size() == n || canonical[n] == '/');
 }
 
-// The node's Tailscale auth key and private keys (TailscaleSocket.cpp): never served, listed or overwritten.
+// The node's Tailscale auth key and private keys (see TailscaleServerAPI.cpp): never served, listed or overwritten.
 inline bool isTailscaleSecretPath(const std::string &canonical)
 {
     return canonical.rfind("/prefs/tailscale", 0) == 0;
