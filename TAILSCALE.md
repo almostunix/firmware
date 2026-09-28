@@ -9,6 +9,9 @@ transport, so `TailscaleServerAPI` contains no protocol logic — a client
 reaching the node over Tailscale talks to the same API implementation it would
 reach over the LAN. PhoneAPI and StreamAPI are untouched.
 
+**To set up a node, read [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md).** This file is the
+engineering log: what was built, measured and fixed, newest first.
+
 ## v1.0 review and v1.1 fixes (2026-09-23)
 
 v1.0 (tag `heltec-v4-v1.0`) is the build that ran stably on the board. A
@@ -670,19 +673,15 @@ real key.
 
 ## Running on ESP32 hardware
 
-Build and flash (the board must be on the machine running these; a VM without
-USB passthrough cannot):
+Step-by-step instructions, including where to add your Tailscale key, are in
+[TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md). In short: write the key with
+`bin/ts-set-secret.sh tailscale-hw <hostname>`, build with `pio run -e heltec-v4-tailscale` and
+`pio run -e heltec-v4-tailscale -t buildfs`, package with `bin/make-flasher-zip.sh`, and flash the
+first-install zip at flasher.meshtastic.org with Full Erase. Later updates use the update zip and
+Update, which keeps the node's tailnet identity.
 
-    bin/ts-set-secret.sh tailscale        # writes data/prefs/tailscale.conf
-    pio run -e heltec-v4-tailscale -t uploadfs   # LittleFS, carries the key
-    pio run -e heltec-v4-tailscale -t upload     # application
-    pio device monitor -b 115200
-
-uploadfs must come first on a fresh board, or the node boots with no config and
-reports the tailnet API disabled.
-
-Current size: 6,350,857 bytes, 48.5% of the 12.5MB single-app slot. Note that
-this table has no OTA -- see the flash budget section.
+The Heltec V4 builds use the stock two-slot `default_16MB.csv`, so Update-mode and over-the-air
+flashing work. The Bluetooth image fills about 99.7% of its 6.25 MB app slot.
 
 ### How the socket shim works (TailscaleSocket.h/.cpp)
 
