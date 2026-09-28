@@ -29,6 +29,11 @@ void restoreThreadStackDefaults();
 /// Internal-RAM headroom, with MESHTASTIC_TAILSCALE_DIAGNOSTICS. esp_rom_printf, so it survives an abort.
 void logInternalHeap(const char *when);
 
+#ifdef ARCH_ESP32
+/// Route tailscale-rs's TLS certificate ECDSA checks to ESP-IDF's mbedTLS (TailscaleMbedtls.cpp).
+void useMbedtlsEcdsa();
+#endif
+
 } // namespace tailscale_shim
 
 #endif // MESHTASTIC_TAILSCALE

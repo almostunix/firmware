@@ -4,3 +4,7 @@
 [submodule "meshtestic"]
 	path = meshtestic
 	url = https://github.com/meshtastic/meshTestic
+[submodule "tailscale-rs"]
+	path = tailscale-rs
+	url = https://github.com/almostunix/tailscale-rs.git
+	branch = heltec-v4

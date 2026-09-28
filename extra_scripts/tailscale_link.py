@@ -1,62 +1,72 @@
-"""Link the tailscale-rs static archive into a Tailscale-enabled build.
+"""Link tailscale-rs's ts_ffi into a Tailscale build.
 
-The archive cannot simply be listed in `build_flags`: PlatformIO runs those
-through SCons' ParseFlags, which classifies anything ending in `.a` as a LIBS
-entry, drops the suffix, and then resolves what is left relative to the
-*platform* directory rather than the project. That is why a plain
-`../tailscale-rs-0.6.1/target/release/libtailscalers.a` failed the link looking
-for `~/.platformio/platforms/native/.../libtailscalers`.
-
-Appending to LINKFLAGS instead hands the archive to the linker verbatim, as a
-positional input, which is what we want -- and keeps it a *static* link rather
-than letting `-ltailscalers` silently prefer the .dylib cargo builds alongside
-it.
+The checkout is the tailscale-rs submodule, or $TAILSCALE_RS_DIR if set.
 """
 
 import os
+import subprocess
 
-Import("env")
+Import("env", "projenv")
+
+
+def git(cwd, *args):
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip()
+
 
 project_dir = env.subst("$PROJECT_DIR")
-ts_root = os.environ.get("TAILSCALE_RS_DIR") or os.path.join(project_dir, "..", "tailscale-rs-0.6.1")
+ts_root = os.path.abspath(
+    os.environ.get("TAILSCALE_RS_DIR") or os.path.join(project_dir, "tailscale-rs")
+)
 
-# Cargo puts a cross-compiled build under target/<triple>/, and a host build
-# straight under target/. Pick by the Rust target this PlatformIO env needs, so
-# an ESP32 env can never silently link the macOS archive (which would fail with
-# a wall of unhelpful architecture errors rather than saying what was wrong).
+if not os.path.isfile(os.path.join(ts_root, "Cargo.toml")):
+    raise SystemExit(
+        "tailscale: no tailscale-rs checkout at %s.\n"
+        "Run `git submodule update --init tailscale-rs`, or set TAILSCALE_RS_DIR."
+        % ts_root
+    )
+
+# Cross builds land in target/<triple>/firmware, host builds in target/firmware.
 rust_target = env.GetProjectOption("custom_tailscale_rust_target", "")
+cargo_cmd = "cargo build -p ts_ffi --profile firmware"
 if rust_target:
-    out_dir = os.path.join(ts_root, "target", rust_target, "release")
-    build_hint = "--target %s -Zbuild-std=std,panic_abort" % rust_target
-    toolchain_hint = "RUSTUP_TOOLCHAIN=esp "
+    out_dir = os.path.join(ts_root, "target", rust_target, "firmware")
+    cargo_cmd = "RUSTUP_TOOLCHAIN=esp %s --target %s -Zbuild-std=std,panic_abort" % (
+        cargo_cmd,
+        rust_target,
+    )
 else:
-    out_dir = os.path.join(ts_root, "target", "release")
-    build_hint = ""
-    toolchain_hint = ""
-
-archive = os.path.normpath(os.path.join(out_dir, "libtailscalers.a"))
+    out_dir = os.path.join(ts_root, "target", "firmware")
+archive = os.path.join(out_dir, "libtailscalers.a")
 
 if not os.path.isfile(archive):
     raise SystemExit(
-        "tailscale: %s not found.\n"
-        "Build the Rust side first:\n"
-        "    cd %s && %scargo build -p ts_ffi --release %s\n"
-        "Or point TAILSCALE_RS_DIR at the tailscale-rs checkout."
-        % (archive, os.path.normpath(ts_root), toolchain_hint, build_hint)
+        "tailscale: %s not found. Build it first:\n    cd %s && %s"
+        % (archive, ts_root, cargo_cmd)
     )
 
-print("tailscale: linking %s" % archive)
+# The firmware records the tailscale-rs commit it needs as the submodule's gitlink.
+pinned = git(project_dir, "rev-parse", ":tailscale-rs")
+actual = git(ts_root, "rev-parse", "HEAD")
+if pinned and actual and pinned != actual:
+    print(
+        "tailscale: WARNING: linking tailscale-rs %s, but this firmware pins %s"
+        % (actual[:12], pinned[:12])
+    )
+if git(ts_root, "status", "--porcelain", "--untracked-files=no"):
+    print("tailscale: WARNING: %s has uncommitted changes" % ts_root)
+print("tailscale: linking %s (tailscale-rs %s)" % (archive, actual[:12] or "unknown"))
 
-# Goes in LIBS, not LINKFLAGS. SCons emits LINKFLAGS *before* the object files,
-# and GNU ld resolves a static archive only against references it has already
-# seen -- so an archive placed first contributes nothing and every ts_* symbol
-# comes back undefined. (Apple's ld is order-insensitive here, which is why the
-# native build worked with LINKFLAGS and hid this.) LIBS lands after the
-# objects, where GNU ld can actually use it.
+# The header comes from the same checkout as the archive (cbindgen writes it there).
+projenv.Append(CPPPATH=[os.path.join(ts_root, "ts_ffi")])
+
+# LIBS, not build_flags (SCons mangles a .a there) or LINKFLAGS (GNU ld needs it
+# after the objects).
 env.Append(LIBS=[env.File(archive)])
-
-# LIBS entries are tracked by SCons, but be explicit anyway: this dependency is
-# what forces a relink when only the Rust side changed. Without it the build
-# once reported SUCCESS while linking a stale libtailscalers.a -- a Rust rebuild
-# that cut 4.9MB off the archive produced a byte-identical firmware.
+# Relink when only the Rust side changed.
 env.Depends("$BUILD_DIR/${PROGNAME}$PROGSUFFIX", archive)

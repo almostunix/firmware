@@ -1,7 +1,7 @@
 // ECDSA verification for tailscale-rs's TLS via ESP-IDF mbedTLS; RustCrypto took ~36 s per handshake.
-// Contract with ts_tls_util: 0 valid, 1 invalid, 2 cannot check (the Rust verifier then decides).
+// Registered with ts_set_ecdsa_verifier: 0 valid, 1 invalid, 2 cannot check (the Rust verifier then decides).
 
-#include "configuration.h" // defines ARCH_ESP32
+#include "TailscaleInternal.h"
 
 #if defined(MESHTASTIC_TAILSCALE) && defined(ARCH_ESP32)
 
@@ -38,9 +38,10 @@ int readUnsigned(unsigned char **p, const unsigned char *end, mbedtls_mpi *out)
 }
 } // namespace
 
-extern "C" int ts_mbedtls_ecdsa_verify(uint32_t curve_bits, uint32_t hash_bits, const uint8_t *public_key,
-                                       size_t public_key_len, const uint8_t *message, size_t message_len,
-                                       const uint8_t *signature, size_t signature_len)
+extern "C" {
+// Matches ts_ecdsa_verify_fn exactly, C linkage included.
+static int ecdsaVerify(uint32_t curve_bits, uint32_t hash_bits, const uint8_t *public_key, uintptr_t public_key_len,
+                       const uint8_t *message, uintptr_t message_len, const uint8_t *signature, uintptr_t signature_len)
 {
     mbedtls_ecp_group_id group_id;
     if (curve_bits == 256)
@@ -107,6 +108,13 @@ extern "C" int ts_mbedtls_ecdsa_verify(uint32_t curve_bits, uint32_t hash_bits, 
     mbedtls_ecp_point_free(&q);
     mbedtls_ecp_group_free(&group);
     return result;
+}
+} // extern "C"
+
+void tailscale_shim::useMbedtlsEcdsa()
+{
+    if (ts_set_ecdsa_verifier(ecdsaVerify) != 0)
+        TS_LOG_WARN("Tailscale: mbedTLS ECDSA not registered; certificate checks stay in Rust");
 }
 
 #endif

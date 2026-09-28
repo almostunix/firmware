@@ -44,6 +44,9 @@ void configure(const std::string &stateFile, const std::string &authKey, const s
     gStateFile = stateFile;
     gAuthKey = authKey;
     gHostname = hostname;
+#ifdef ARCH_ESP32
+    tailscale_shim::useMbedtlsEcdsa();
+#endif
 }
 
 /// tokio's IO driver needs an eventfd, which ESP-IDF only provides once this VFS is registered.
