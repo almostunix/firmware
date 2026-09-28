@@ -1,17 +1,11 @@
 #!/bin/sh
-# Run the native (macOS) tailnet build against the real control server and
-# measure what the simulator can only glimpse -- at zero simulator cost.
+# Run the native (macOS) tailnet build against the real control server, at no simulator cost.
 #
 #   bin/native-tailnet-test.sh <fsdir> <seconds>   [env: TS_TEST_* hooks]
-#   INFO_EVERY=<s>  also re-run --info every <s> seconds, to show the node stays
-#                   usable across control reconnects (which keep the same IP
-#                   and so produce no new "joined" line).
+#   INFO_EVERY=<s>  also re-run --info every <s> seconds, across control reconnects.
 #
-# <fsdir> must contain prefs/tailscale.conf. Reports, with timestamps: the join,
-# the tailnet listener, when this machine's netmap first shows the node with a
-# home relay (it is relay-only, so unreachable until then), a meshtastic --info
-# over the tailnet after each (re)connection, and the daemon's open socket
-# count every 10s -- a leak across reconnects shows up there.
+# <fsdir> must contain prefs/tailscale.conf. Logs the join, the listener, when this machine's netmap shows
+# the node's home relay, each --info over the tailnet, and the daemon's socket count every 10 s (for leaks).
 set -u
 fsdir=${1:?fsdir}; dur=${2:?seconds}
 bin=$(cd "$(dirname "$0")/.." && pwd)/.pio/build/native-macos-tailscale/meshtasticd

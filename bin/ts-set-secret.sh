@@ -1,14 +1,6 @@
 #!/bin/sh
-# Write a Tailscale/Wokwi secret to disk without it touching the shell history,
-# the process table, or an AI transcript.
-#
-# Both secrets previously went in via a bare `read -s` one-liner. That failed
-# twice in one sitting: a clipboard route pasted the command text itself into
-# the token file, and the Wokwi token was typed at the Tailscale prompt. Neither
-# was caught until the files were inspected, because nothing validated them and
-# an invisible prompt gives no feedback.
-#
-# So this validates before writing, and reports only a verdict -- never a value.
+# Write a Tailscale or Wokwi secret to disk without it reaching shell history, the process table
+# or a chat transcript. Validates the shape first, and reports a verdict, never the value.
 #
 #   bin/ts-set-secret.sh wokwi                  -> .wokwi-env  (export WOKWI_CLI_TOKEN=...)
 #   bin/ts-set-secret.sh tailscale              -> data/prefs/tailscale.conf, simulator node
@@ -49,8 +41,7 @@ IFS= read -r VALUE || true
 stty echo 2>/dev/null || true
 printf '\n' >&2
 
-# Trim leading/trailing whitespace: a paste often carries a trailing newline
-# or space, and no key ever contains whitespace.
+# A paste often carries a trailing newline or space; no key contains whitespace.
 VALUE=$(printf '%s' "$VALUE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
 len=$(printf '%s' "$VALUE" | wc -c | tr -d ' ')
@@ -60,8 +51,7 @@ if [ "$len" -eq 0 ]; then
   exit 1
 fi
 
-# Shell metacharacters mean this is not a token. It matters most for
-# .wokwi-env, which gets sourced -- a stray ; or $( ) there is code execution.
+# Shell metacharacters mean this is not a token; .wokwi-env is sourced, so they would be code.
 case "$VALUE" in
   *[!A-Za-z0-9._-]*)
     echo "refused: contains characters outside [A-Za-z0-9._-] (length $len)." >&2
@@ -94,8 +84,7 @@ fi
 mkdir -p "$(dirname "$dest")"
 
 if [ "$1" = wokwi ]; then
-  # Single-quote the value so that sourcing this file can never execute
-  # anything, even if the validation above is ever loosened.
+  # Single-quoted, so sourcing the file can never run anything.
   printf "export WOKWI_CLI_TOKEN='%s'\n" "$VALUE" > "$dest"
 else
   { [ "$1" = tailscale-hw ] && printf '# target=hardware -- bin/wokwi-run.sh refuses images containing this line\n'

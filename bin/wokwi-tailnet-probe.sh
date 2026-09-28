@@ -1,20 +1,7 @@
 #!/bin/sh
-# Connect to the simulated node over the tailnet while a tailnet scenario is
-# holding it up. Run alongside bin/wokwi-run.sh tailnet.
-#
-# Order matters. tailscale-rs is relay-only: peers can reach it *only* through
-# its home DERP region, which it has to measure, connect to and advertise to the
-# control plane after joining. A connection attempted before that has nowhere to
-# go -- the first version of this probe connected the moment the node reported
-# a listener and timed out while the node's Relay field was still empty. So:
-#
-#   1. wait for the node to report its tailnet listener (serial log),
-#   2. wait for this machine's netmap to show that node with a home relay,
-#   3. then TCP-connect and run `meshtastic --info`, retrying until the node
-#      goes away or the deadline passes.
-#
-# PROBE_STOP_ON_SUCCESS=1 ends the simulation once --info succeeds: minutes are
-# paid for, and nothing after that point is being tested.
+# Connect to the simulated node over the tailnet; run alongside bin/wokwi-run.sh tailnet.
+# tailscale-rs is relay-only, so this waits for the listener, then for this machine's netmap to show the
+# node's home relay, then retries `meshtastic --info`. PROBE_STOP_ON_SUCCESS=1 ends the run once it works.
 set -u
 deadline=$(( $(date +%s) + ${PROBE_WAIT_S:-600} ))
 t0=$(date +%s)

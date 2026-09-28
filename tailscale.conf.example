@@ -1,24 +1,12 @@
-# Phase 1 Tailscale settings for meshtasticd.
-#
-# Copy to `tailscale.conf` in the directory you run meshtasticd from, or point
-# MESHTASTIC_TAILSCALE_CONFIG at it. Read by initTailscaleApiServer() in
-# src/mesh/api/TailscaleServerAPI.cpp.
-#
-# Rust-side diagnostics from tailscale-rs go to stderr at INFO by default.
-# Export RUST_LOG=debug (or RUST_LOG=tailscale=trace) before starting
-# meshtasticd when a join fails and you need to see why.
-#
-# authkey is required. Generate a reusable, ephemeral auth key in the Tailscale
-# admin console under Settings -> Keys. An ephemeral key is the right choice
-# here: the node is expected to come and go, and ephemeral nodes are reaped
-# automatically instead of accumulating in the machine list.
+# Tailscale settings for a native (host) meshtasticd, one key=value per line.
+# Copy to tailscale.conf in meshtasticd's working directory, or point MESHTASTIC_TAILSCALE_CONFIG at it.
+# For a board, bin/ts-set-secret.sh writes data/prefs/tailscale.conf instead: see TAILSCALE-QUICKSTART.md.
+
+# Required. For a throwaway host node an ephemeral key keeps the machine list clean. Never commit a real one.
 authkey=tskey-auth-REPLACE-ME
 
-# Name this node claims on the tailnet. Its tailnet IP is derived from the
-# identity in statefile, not from this.
+# The node's tailnet name. Its IP comes from the identity in statefile, not from this.
 hostname=meshtastic-dev
 
-# Where the node's persistent identity lives. Created on first run if absent,
-# and reused afterwards so the node keeps the same tailnet IP across restarts.
-# Treat it as a secret: it is the node's private key material.
+# The node's identity and private keys: created on first run, reused so the IP survives restarts. Keep it secret.
 statefile=tailscale_keys.json

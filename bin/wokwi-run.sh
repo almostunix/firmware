@@ -6,15 +6,8 @@
 #   bin/wokwi-run.sh diag-*    dummy key: a diagnostic scenario; nothing is
 #                              aborted on, since observing is the point
 #
-# Minutes are the scarce resource (free plan: 50/month, 5 min per run). A
-# scenario ends the simulation as soon as its last step passes, and
-# --fail-text ends it as soon as the node resets: every crash seen so far --
-# panic, assert, abort -- finishes with "Rebooting...".
-#
-# The staged image is checked before anything is uploaded, because the wrong
-# key in the wrong scenario is expensive in both directions: a real key in a
-# dry run spends a single-use key on a test that does not need it, and the
-# dummy in a tailnet run wastes minutes on a join that cannot succeed.
+# Minutes are scarce (free plan: 50/month, 5 per run): a run ends when its last step passes or the
+# node resets, and the staged key is checked first so no scenario spends the wrong one.
 set -u
 
 scenario="${1:-}"
@@ -59,22 +52,8 @@ fi
 mkdir -p .pio/wokwi-logs
 log=".pio/wokwi-logs/$scenario-$(date +%Y%m%d-%H%M%S).log"
 
-# Two independent limits, because both of the obvious ones turned out not to
-# work (each cost real minutes to discover):
-#
-#  1. Crash detection. --fail-text "Rebooting..." was assumed to catch every
-#     crash. It does not: a Rust double panic ("thread panicked while
-#     processing panic. aborting.") resets the chip without printing it, and 14
-#     of those crash-looped straight past it. What every reset *does* print is
-#     the ROM banner, and only the first boot of a run is a POWERON reset -- so
-#     any "rst:0x" line that is not POWERON means the node went down.
-#
-#  2. Wall-clock limit. --timeout counts *simulated* time, and Wokwi runs well
-#     below real time, so a 290s timeout billed 562s. The watcher enforces a
-#     wall-clock ceiling itself.
-#
-# Plus scenario-specific aborts (default: the simulated battery misread, after
-# which the cutoff can never arm). Patterns are '|'-separated fixed strings.
+# Aborts on any non-POWERON reset (a Rust double panic resets without "Rebooting...") and at a
+# wall-clock ceiling (--timeout counts simulated time, which runs slow). Patterns are '|'-separated.
 crash_on="RTC_SW_CPU_RST|TG0WDT_SYS_RST|TG1WDT_SYS_RST|RTCWDT_RTC_RST|panicked at|Guru Meditation|assert failed|abort() was called"
 default_abort="absent (USB-only)|usbPower=1"
 case "$scenario" in diag-*) default_abort="" ;; esac
@@ -117,8 +96,7 @@ status=$?
 elapsed=$(( $(date +%s) - started ))
 kill "$watcher" 2>/dev/null
 
-# Keep a ledger: CI minutes are paid for, and a running total is the only way
-# to notice a run that costs more than it should.
+# Ledger of paid simulator minutes, to spot a run that costs more than it should.
 printf '%s\t%s\t%ss\texit=%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$scenario" "$elapsed" "$status" "$log" \
   >> .pio/wokwi-logs/ledger.tsv
 total=$(awk -F'\t' '{sub(/s$/, "", $3); t += $3} END {printf "%.1f", t / 60}' .pio/wokwi-logs/ledger.tsv)

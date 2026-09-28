@@ -1,24 +1,6 @@
-"""Stage build artifacts under stable names for Wokwi.
+"""Stage a full flash image (app plus LittleFS, which holds the key) as <build_dir>/wokwi/firmware.bin.
 
-Meshtastic renames its outputs with a version+commit suffix
-(firmware-heltec-v4-tailscale-2.7.26.abc1234.bin), but wokwi.toml needs a fixed
-path and has no globbing. Copy the artifacts to
-<build_dir>/wokwi/{firmware.bin,firmware.elf} after every build so the simulator
-config can stay static.
-
-firmware.bin is a FULL FLASH IMAGE, not just the factory image. wokwi-cli has no
-option for extra flash regions -- it writes one blob at offset 0 -- but the
-Tailscale auth key lives in /prefs/tailscale.conf on the LittleFS partition, so
-the filesystem has to be merged in or the simulated node boots with no key and
-cannot join the tailnet.
-
-The LittleFS offset is read from the partition table inside the factory image
-rather than from the CSV, so it cannot drift from the table the device will
-actually use. Gaps are filled with 0xFF, which is what erased NOR flash reads as.
-
-If the filesystem image is absent (a plain `pio run` without `-t buildfs`), the
-factory image is staged alone and a warning is printed -- the firmware will boot
-but will find no config.
+wokwi.toml cannot glob Meshtastic's versioned file names, and wokwi-cli writes only one blob at offset 0.
 """
 
 import glob

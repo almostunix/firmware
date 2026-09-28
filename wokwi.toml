@@ -1,20 +1,7 @@
-# Wokwi simulator config for the Tailscale-enabled Heltec V4 firmware.
-#
-#   pio run -e heltec-v4-tailscale-wokwi
-#   wokwi-cli --timeout 120000 .
-#
-# Paths are staged by extra_scripts/wokwi_stage.py, because Meshtastic's
-# artifacts carry a version+commit suffix and this file cannot glob.
-#
-# The board in diagram.json is an esp32-s3-devkitc-1 rather than a Heltec V4:
-# Wokwi has no Heltec model, and nothing we are testing depends on the LoRa
-# radio or display. Flash is set to 16MB and PSRAM to 2MB quad to match the real
-# board, so the partition table and PSRAM allocator behave the same.
+# Wokwi config for heltec-v4-tailscale-wokwi; bin/wokwi-run.sh runs it. Paths come from extra_scripts/wokwi_stage.py.
+# diagram.json uses an ESP32-S3 devkit (Wokwi has no Heltec model) with the V4's 16 MB flash and 2 MB PSRAM.
 [wokwi]
 version = 1
 firmware = ".pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.bin"
 
-# No `elf =` on purpose. The ELF is ~51MB unstripped and wokwi-cli uploads it
-# alongside the firmware, which is dead weight when nothing is attaching a
-# debugger. Pass --elf .pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.elf
-# explicitly if you need symbols in a backtrace.
+# No `elf =`: the 51 MB ELF would be uploaded every run. Pass --elf for symbolised backtraces.
