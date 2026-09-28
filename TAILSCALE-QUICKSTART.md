@@ -1,11 +1,11 @@
-# Meshtastic over Tailscale: quick start
+# Tailscale branch: quick start
 
-This unofficial branch adds [Tailscale](https://tailscale.com) to the Meshtastic firmware using
+This unofficial branch of the Meshtastic firmware adds [Tailscale](https://tailscale.com), using
 [tailscale-rs](https://github.com/tailscale/tailscale-rs). The node joins your tailnet over WiFi and
 serves the normal Meshtastic phone API on its tailnet address, port 4403. You can reach it from anywhere
 on your tailnet with no port forwarding. The LAN API, LoRa and (with WiFi off) Bluetooth work as usual.
 
-It is not affiliated with or endorsed by Meshtastic LLC or Tailscale Inc. See
+It is not affiliated with or endorsed by the Meshtastic project, Meshtastic LLC or Tailscale Inc. See
 [NOTICE-TAILSCALE.md](NOTICE-TAILSCALE.md) for credits and licences, and [TAILSCALE.md](TAILSCALE.md)
 for the engineering notes.
 
@@ -27,7 +27,7 @@ Both repositories go side by side in one folder. The firmware build expects tail
 `../tailscale-rs-0.6.1`:
 
 ```bash
-git clone -b tailscale-heltec-v4 https://github.com/almostunix/firmware meshtastic-tailscale
+git clone -b tailscale-heltec-v4 https://github.com/almostunix/firmware firmware
 git clone -b heltec-v4 https://github.com/almostunix/tailscale-rs tailscale-rs-0.6.1
 ```
 
@@ -41,7 +41,7 @@ git clone -b heltec-v4 https://github.com/almostunix/tailscale-rs tailscale-rs-0
 2. From the firmware folder, write the key and choose the node's tailnet name:
 
    ```bash
-   cd meshtastic-tailscale
+   cd firmware
    bin/ts-set-secret.sh tailscale-hw my-meshtastic-node
    ```
 
@@ -61,7 +61,7 @@ cd ../tailscale-rs-0.6.1
 RUSTUP_TOOLCHAIN=esp cargo build -p ts_ffi --release --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
 
 # The firmware, and a filesystem image that carries your key
-cd ../meshtastic-tailscale
+cd ../firmware
 pio run -e heltec-v4-tailscale
 pio run -e heltec-v4-tailscale -t buildfs
 ```

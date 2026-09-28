@@ -1,13 +1,13 @@
 > [!NOTE]
 > **Unofficial Tailscale branch.** The `tailscale-heltec-v4` branch adds [Tailscale](https://tailscale.com)
 > so a node serves the Meshtastic phone API on your tailnet, with no port forwarding. It is not affiliated
-> with or endorsed by Meshtastic LLC or Tailscale Inc. **Start here:**
+> with or endorsed by the Meshtastic project, Meshtastic LLC or Tailscale Inc. **Start here:**
 > [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md). Credits and licences:
 > [NOTICE-TAILSCALE.md](NOTICE-TAILSCALE.md).
 
 <div align="center" markdown="1">
 
-<img src=".github/meshtastic_logo.png" alt="Meshtastic Logo" width="80"/>
+<a href="https://meshtastic.org"><img src=".github/meshtastic_logo.png" alt="Meshtastic Logo" width="80"/></a>
 <h1>Meshtastic Firmware</h1>
 
 ![GitHub release downloads](https://img.shields.io/github/downloads/meshtastic/firmware/total)

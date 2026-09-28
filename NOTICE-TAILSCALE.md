@@ -1,11 +1,14 @@
-# Notice: Tailscale support for Meshtastic (unofficial)
+# Notice: the unofficial `tailscale-heltec-v4` branch
 
 The `tailscale-heltec-v4` branch of this repository adds Tailscale networking to the Meshtastic
-firmware. It is an independent, unofficial project. It is **not affiliated with, sponsored by, or
-endorsed by Meshtastic LLC or Tailscale Inc.**
+firmware. It is an independent, unofficial branch. **This branch is not affiliated with or endorsed by
+the Meshtastic project, and is not affiliated with, sponsored by, or endorsed by Meshtastic LLC or
+Tailscale Inc.**
 
-Meshtastic® is a registered trademark of Meshtastic LLC. Tailscale is a trademark of Tailscale Inc.
-Both names are used here only to describe what the software works with.
+Meshtastic® is a registered trademark of Meshtastic LLC. The Meshtastic logo trademark is the trademark
+of Meshtastic LLC; the logo in [README.md](README.md) is upstream's and links to
+<https://meshtastic.org>. Tailscale® is a registered trademark of Tailscale Inc. Both names are used
+here only to describe what the software works with, not as the name of this branch or of any product.
 
 ## Credits
 
