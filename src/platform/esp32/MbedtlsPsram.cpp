@@ -1,6 +1,5 @@
-// mbedTLS allocations PSRAM-first, as ESP-IDF's CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC would do. The prebuilt Arduino libs
-// allocate internal-only, and HTTPS alone needs ~40 KB that WiFi + Tailscale can't spare. Wired in by
-// -Wl,--wrap=esp_mbedtls_mem_calloc; frees still go through esp_mbedtls_mem_free, which handles any heap.
+// mbedTLS allocations PSRAM-first (what CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC would do), via
+// -Wl,--wrap=esp_mbedtls_mem_calloc: the prebuilt libs allocate internal-only, and HTTPS needs ~40 KB.
 #include "configuration.h"
 
 #if defined(ARCH_ESP32) && defined(MESHTASTIC_MBEDTLS_PSRAM)

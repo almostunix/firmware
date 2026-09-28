@@ -214,10 +214,7 @@ static void onNetworkConnected()
         }
 #endif
 #ifdef MESHTASTIC_TAILSCALE
-        // Started from here rather than setup(): joining a tailnet needs the
-        // network already up, and on ESP32 WiFi association is asynchronous.
-        // The join itself runs on its own thread, so this returns immediately.
-        // Idempotent, which matters because this path can run more than once.
+        // Here, not setup(): joining needs the network up. Returns at once, and is idempotent.
         initTailscaleApiServer();
 #endif
         APStartupComplete = true;

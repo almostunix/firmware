@@ -55,12 +55,7 @@
 
 #endif
 
-// How often Power::runOnce() re-reads power status. The low-voltage cutoff
-// counts consecutive low readings (more than 10 triggers deep sleep), so this
-// period also sets how long a cell must stay below the cutoff before the node
-// acts: ~220s at the default. Overridable only so the simulator can exercise
-// that logic without spending minutes of paid simulation time waiting on it --
-// the thresholds, the counter and the smoothing filter are unchanged.
+// Power status re-read interval; the low-voltage cutoff counts consecutive low reads. Overridable for the simulator.
 #ifndef POWER_POLL_INTERVAL_MS
 #define POWER_POLL_INTERVAL_MS (1000 * 20)
 #endif
@@ -71,9 +66,7 @@
 
 #if defined(BATTERY_PIN) && defined(ARCH_ESP32)
 
-// Variants spell the channel as ADC1_GPIOn_CHANNEL from soc/adc_channel.h,
-// which is a plain integer literal, so it needs an explicit cast in C++. A few
-// variants instead use the legacy ADC1_CHANNEL_n enum; both convert cleanly.
+// Variants give the channel as a plain ADC1_GPIOn_CHANNEL literal (or the legacy enum); cast for C++.
 static const adc_channel_t adc_channel = (adc_channel_t)ADC_CHANNEL;
 
 #ifndef BAT_MEASURE_ADC_UNIT // ADC1 is default
@@ -88,9 +81,7 @@ static const adc_atten_t atten = ADC_ATTEN_DB_12;
 static const adc_atten_t atten = ADC_ATTENUATION;
 #endif
 
-// ADC_WIDTH, where a variant sets it, is a legacy adc_bits_width_t. Only one
-// variant mentions it and that line is commented out, so take the driver's
-// default width for the chip rather than trying to translate the old enum.
+// The legacy ADC_WIDTH isn't translated; no variant sets it. Use the chip's default width.
 static const adc_bitwidth_t bitwidth = ADC_BITWIDTH_DEFAULT;
 
 static adc_oneshot_unit_handle_t adc_handle = nullptr;
@@ -350,11 +341,7 @@ class AnalogBatteryLevel : public HasBatteryLevel
 #ifdef ARCH_ESP32 // ADC block for espressif platforms
             raw = espAdcRead();
             int mv = 0;
-            // analogInit() refuses to hand out a batteryLevel without a working
-            // calibration handle, so reaching here with a null one is a bug
-            // rather than a runtime condition -- but read defensively and
-            // report 0 (unknown) rather than an unscaled raw count, which would
-            // look like a flat battery and arm the low-voltage cutoff.
+            // A null handle is a bug (analogInit refuses one), but 0 reads as "unknown", not as a flat battery.
             if (adc_cali_handle && adc_cali_raw_to_voltage(adc_cali_handle, (int)raw, &mv) == ESP_OK) {
                 scaled = (float)mv * operativeAdcMultiplier;
             } else {
@@ -387,9 +374,7 @@ class AnalogBatteryLevel : public HasBatteryLevel
             // LOG_DEBUG("battery gpio %d raw val=%u scaled=%u filtered=%u",
             // BATTERY_PIN, raw, (uint32_t)(scaled), (uint32_t) (last_read_value));
 #ifdef POWER_LOG_ADC_READS
-            // Every read, unthrottled -- the periodic "Battery:" line is limited to
-            // one per 50s and only prints once a battery is detected, so it cannot
-            // show a reading that is wrong. Pin voltage is scaled / ADC multiplier.
+            // Every read, unthrottled: the periodic "Battery:" line only prints once a battery is detected.
             LOG_DEBUG("Battery ADC read: raw=%u scaled=%u filtered=%u", (unsigned)raw, (unsigned)scaled,
                       (unsigned)last_read_value);
 #endif
@@ -411,11 +396,7 @@ class AnalogBatteryLevel : public HasBatteryLevel
         if (!adc_handle)
             return 0;
 
-        // One path for both ADC units. The legacy code needed three: ADC1, ADC2
-        // on the S3, and ADC2 elsewhere with a SENS_SAR_READ_CTRL2_REG poke to
-        // work around the ESP32 ADC2/WiFi conflict. adc_oneshot arbitrates ADC2
-        // against WiFi itself and simply returns an error when WiFi holds the
-        // unit, which the existing valid-sample counter already handles.
+        // One path for both ADC units: adc_oneshot arbitrates ADC2 against WiFi and returns an error instead.
         for (int i = 0; i < BATTERY_SENSE_SAMPLES; i++) {
             int val = 0;
             esp_err_t err = adc_oneshot_read(adc_handle, adc_channel, &val);
@@ -663,9 +644,7 @@ bool Power::analogInit()
 
 #ifdef ARCH_ESP32 // ESP32 needs special analog stuff
 
-    // adc_oneshot replaces adc1_config_width/adc1_config_channel_atten, and
-    // adc_cali replaces esp_adc_cal_characterize. See the note in power.h for
-    // why the legacy pair is not used even though IDF 5.5 still ships it.
+    // adc_oneshot and adc_cali replace the legacy driver, which can't coexist with Arduino 3.x's analogRead().
     adc_oneshot_unit_init_cfg_t init_cfg = {};
     init_cfg.unit_id = unit;
     init_cfg.ulp_mode = ADC_ULP_MODE_DISABLE;
@@ -689,9 +668,7 @@ bool Power::analogInit()
         return false;
     }
 
-    // Calibration turns a raw count into millivolts using per-chip eFuse data.
-    // Which scheme a chip supports is fixed: curve fitting on the S3 and other
-    // recent parts, line fitting on the original ESP32 and S2.
+    // Per-chip eFuse calibration: curve fitting on the S3 and newer parts, line fitting on ESP32/S2.
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cali_cfg = {};
     cali_cfg.unit_id = unit;
@@ -710,12 +687,7 @@ bool Power::analogInit()
 #endif
 
     if (err != ESP_OK) {
-        // Refuse to report a battery rather than report a wrong one. An
-        // uncalibrated reading can be off by enough to matter at the 3.1V
-        // low-voltage cutoff -- early enough to shut a working node down, or
-        // late enough to keep discharging a cell that should have stopped.
-        // Returning false here leaves batteryLevel null, which is the same
-        // state as a board with no divider, and the cutoff simply never arms.
+        // No calibration, no battery: an uncalibrated reading can misjudge the 3.1 V cutoff either way.
         LOG_ERROR("Battery ADC calibration unavailable: %s -- no battery sensing", esp_err_to_name(err));
         adc_cali_handle = nullptr;
         adc_oneshot_del_unit(adc_handle);

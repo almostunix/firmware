@@ -236,12 +236,7 @@ std::unique_ptr<RadioInterface> initLoRa()
     std::unique_ptr<RadioInterface> rIf = nullptr;
 
 #ifdef MESHTASTIC_SIMULATOR_NO_LORA
-    // SIMULATOR ONLY. Wokwi has no SX1262 model, so RadioLib blocks forever
-    // waiting on a BUSY line that never settles, and setup() never reaches
-    // initWifi() -- which is where the tailnet API is started from on ESP32.
-    // main() already treats a null interface as a recorded critical error and
-    // carries on, so returning early here is the whole change. SimRadio is not
-    // an option: it is compiled only for ARCH_PORTDUINO.
+    // SIMULATOR ONLY: Wokwi has no SX1262, and RadioLib would wait forever on BUSY. main() copes with no radio.
     LOG_WARN("Simulator build: skipping LoRa radio init (no radio in this build)");
     return rIf;
 #endif

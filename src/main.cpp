@@ -1032,9 +1032,7 @@ void setup()
 #endif
     initApiServer(TCPPort);
 #ifdef MESHTASTIC_TAILSCALE
-    // Additive: the LAN API above keeps working regardless of whether
-    // the tailnet comes up. Different network stacks, so both can serve
-    // the same port number without conflicting.
+    // Additive: the LAN API keeps working whether or not the tailnet comes up.
     initTailscaleApiServer(TCPPort);
 #endif
 #endif

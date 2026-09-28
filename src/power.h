@@ -4,11 +4,8 @@
 #include "configuration.h"
 
 #ifdef ARCH_ESP32
-// esp_adc/* rather than the legacy driver/adc.h + esp_adc_cal.h pair. Both are
-// still shipped on IDF 5.5, but Arduino core 3.x implements analogRead() on top
-// of adc_oneshot, and ESP-IDF does not support the legacy and current ADC
-// drivers coexisting in one application -- whichever claims the unit second
-// fails. soc/adc_channel.h stays: that is where variants get ADC1_GPIOn_CHANNEL.
+// esp_adc/* rather than the legacy driver/adc.h: Arduino 3.x's analogRead() uses adc_oneshot,
+// and ESP-IDF doesn't allow both drivers in one app. soc/adc_channel.h stays, for ADC1_GPIOn_CHANNEL.
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
 #include <esp_adc/adc_oneshot.h>

@@ -10,34 +10,15 @@
 
 static TailscaleServerPort *tailscaleApiPort;
 
-/**
- * Phase 1 configuration, read from a file rather than from ModuleConfig.
- *
- * Deliberate: adding a protobuf field means regenerating nanopb sources and
- * carrying a schema change across upstream releases, which is a much larger
- * commitment than this feature needs while it is still being proven. A plain
- * file gets the same information in with nothing to migrate, and the eventual
- * move to ModuleConfig does not change anything above this line.
- *
- * Format is one `key=value` per line: `authkey=`, `hostname=`, `statefile=`.
- */
-/// Where the node's persistent identity lives, as a path the *Rust* side will
-/// open with std::fs -- so it must be a real VFS path, not an FSCom-relative
-/// one. On ESP32, LittleFS is mounted through esp_littlefs at basePath
-/// "/littlefs" (see FSCommon.h: FSCom.begin(true) with Arduino's default), so
-/// FSCom's "/prefs/x" is "/littlefs/prefs/x" to anything outside the Arduino FS
-/// wrapper. Portduino just uses the process working directory.
+// Settings: /prefs/tailscale.conf, one key=value per line (authkey, hostname, statefile), not ModuleConfig.
+/// Rust opens the identity file with std::fs, so on ESP32 it needs LittleFS's VFS mount point.
 #ifdef ARCH_ESP32
 #define TS_DEFAULT_STATEFILE "/littlefs/prefs/tailscale_keys.json"
 #else
 #define TS_DEFAULT_STATEFILE "tailscale_keys.json"
 #endif
 
-/// Default config location, opened through FSCom, so it is relative to whatever
-/// FSCom is rooted at: LittleFS on ESP32, the --fsdir directory on Portduino.
-/// One path for every platform, alongside Meshtastic's own prefs -- a bare
-/// "tailscale.conf" would look like the working directory but does not mean that
-/// on either platform.
+/// The config is read through FSCom, which is rooted at LittleFS on ESP32 and --fsdir on Portduino.
 
 struct TailscaleSettings {
     std::string authKey;
@@ -57,11 +38,7 @@ static std::string trim(const std::string &s)
 
 static bool loadSettings(const char *path, TailscaleSettings &out)
 {
-    // Read through FSCom, not std::ifstream. On ESP32 there is no working
-    // directory and LittleFS is not on the C++ standard library's path, so an
-    // ifstream with a relative name silently finds nothing and the tailnet API
-    // just reports itself disabled. FSCom is the abstraction Meshtastic already
-    // uses for exactly this, and it works on every platform.
+    // FSCom, not std::ifstream: on ESP32 LittleFS is not on the C++ library's path.
     auto f = FSCom.open(path, FILE_O_READ);
     if (!f || f.isDirectory()) {
         LOG_WARN("Tailscale: no config at %s, tailnet API disabled", path);
@@ -73,11 +50,7 @@ static bool loadSettings(const char *path, TailscaleSettings &out)
     std::string line;
     while (f.available()) {
         line = std::string(f.readStringUntil('\n').c_str());
-        // Trim before inspecting: this file is hand-edited, so `authkey = x`
-        // and an indented comment are both things people actually write. An
-        // untrimmed key would silently fail to match, and an untrimmed value
-        // would send a leading space to the control plane and come back as an
-        // opaque auth rejection.
+        // Hand-edited file: trim, or `authkey = x` would miss and a stray space would fail the join.
         const std::string entry = trim(line);
         if (entry.empty() || entry[0] == '#')
             continue;
@@ -108,9 +81,7 @@ static bool loadSettings(const char *path, TailscaleSettings &out)
         return false;
     }
 
-    // Catch a truncated or mis-pasted key here rather than as an opaque
-    // rejection from the control plane several seconds later. Never log the
-    // key itself -- only whether its shape is plausible.
+    // Catch a mis-pasted key now rather than as an opaque rejection; never log the key itself.
     if (out.authKey.rfind("tskey-", 0) != 0)
         LOG_WARN("Tailscale: authkey in %s does not start with 'tskey-'; if the join fails, suspect a paste error", path);
 
@@ -130,10 +101,7 @@ void initTailscaleApiServer(int port)
     if (!loadSettings(configPath, settings))
         return;
 
-    // Hand the settings over and let the server's own bring-up thread do the
-    // joining. Nothing in here may block: this runs from setup(), and the join
-    // can take tens of seconds when the control server is slow or rejects the
-    // node -- which previously stalled the radio coming up.
+    // Must not block (this runs from setup()): the server's own bring-up thread does the join.
     TailscaleTransport::configure(settings.stateFile, settings.authKey, settings.hostname);
 
     tailscaleApiPort = new TailscaleServerPort(port);

@@ -684,6 +684,39 @@ reports the tailnet API disabled.
 Current size: 6,350,857 bytes, 48.5% of the 12.5MB single-app slot. Note that
 this table has no OTA -- see the flash budget section.
 
+### How the socket shim works (TailscaleSocket.h/.cpp)
+
+- **Why threads.** ts_ffi's TCP calls only block (no poll, no timeout, no
+  "bytes available"); Meshtastic polls `available()`/`read()` from its
+  cooperative scheduler every ~100 ms and must never block, or the radio stalls.
+  So each connection has a reader thread (ts_tcp_recv into a bounded rx buffer,
+  8 KB: stopping there is the TCP backpressure) and a writer thread (a tx queue
+  into ts_tcp_send, which may write partially). The accept loop has its own
+  thread. The scheduler only touches the buffers, under their mutexes.
+- **The tx queue is required**, not an optimisation: StreamAPI writes from two
+  paths (packets and log records), and `write()` must not block. It is
+  all-or-nothing (16 KB): a partial frame would corrupt the stream, so an
+  over-full queue drops the connection instead.
+- **`flush()` is handoff, not delivery**, bounded at 5 s: StreamAPI calls it
+  after every packet on the scheduler thread.
+- **Who closes the socket.** `ts_tcp_close` consumes the Rust `Box` while
+  recv/send hold references to it, so it runs in `~ConnState`, which only runs
+  once both workers and every handle are gone (all hold `shared_ptr`s; the
+  workers are detached because a blocked ts_ffi call cannot be interrupted).
+  `close()` only half-closes (`ts_tcp_shutdown`), which wakes the reader when
+  the peer answers with its own FIN.
+- **Logging from workers is deferred.** Meshtastic's LOG_ macros are not
+  thread-safe (RedirectablePrint's buffer, `OSThread::currentThread`, the
+  protobuf log stream), so workers queue lines and `TailscaleServerPort::runOnce`
+  emits them.
+- **Bring-up is off the scheduler.** ts_init, ts_ipv4_addr and ts_tcp_listen
+  all block; ts_ipv4_addr took 33 s when the control server rejected a node.
+  It retries with backoff (5 s doubling to 5 min).
+- **`accept()` and `available()`** are the same: `APIServerPort` calls
+  `accept()` on Arduino-ESP32 3.x and `available()` elsewhere.
+- **Tests** drive a connection against a fake peer through the `StreamOps`
+  seam: `pio test -e native-macos-tailscale -f test_tailscale_shim`.
+
 ### What the ESP32 needs that the host does not
 
 Four things, none of which the native build exercises:
