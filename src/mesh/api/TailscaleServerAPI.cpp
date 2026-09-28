@@ -2,8 +2,8 @@
 
 #ifdef MESHTASTIC_TAILSCALE
 
-#include "TailscaleServerAPI.h"
 #include "FSCommon.h"
+#include "TailscaleServerAPI.h"
 #include <Arduino.h>
 #include <cstdlib>
 #include <string>

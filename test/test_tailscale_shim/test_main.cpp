@@ -220,7 +220,6 @@ void test_reader_stops_at_the_rx_limit_and_resumes()
     }));
 }
 
-
 void setup()
 {
     initializeTestEnvironment();
