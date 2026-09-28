@@ -11,7 +11,6 @@
 #include <thread>
 #include <vector>
 
-
 #ifdef ARCH_ESP32
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
@@ -72,32 +71,22 @@ void drainDeferredLogs()
     }
 }
 
+StreamOps streamOps = {ts_tcp_recv, ts_tcp_send, ts_tcp_shutdown, ts_tcp_close};
+
 /// Chunk size for a single `ts_tcp_recv`. One MTU-ish read keeps the reader
 /// responsive without making the buffer churn.
 static constexpr size_t TS_READ_CHUNK = 1024;
 
-// ---------------------------------------------------------------------------
-// ConnState
-// ---------------------------------------------------------------------------
-
 ConnState::~ConnState()
 {
-    // Reached only once both workers have dropped their references and every
-    // client handle is gone, so nothing can still hold the `&tcp_stream` that
-    // would make this close an aliasing violation. See the struct comment.
+    // Only runs once both workers and every handle are gone, so nothing still holds the stream.
     if (stream) {
-        ts_tcp_close(stream);
+        streamOps.close(stream);
         stream = nullptr;
     }
 }
 
-// ---------------------------------------------------------------------------
-// Connection workers
-//
-// Both take the shared state by value: that reference is what keeps the state
-// alive while they are detached, and dropping it on return is what eventually
-// triggers `~ConnState` and closes the socket.
-// ---------------------------------------------------------------------------
+// Workers hold the state by value; the last one out triggers ~ConnState and the close.
 
 static void readerLoop(std::shared_ptr<ConnState> st)
 {
@@ -113,7 +102,7 @@ static void readerLoop(std::shared_ptr<ConnState> st)
                 break;
         }
 
-        int n = ts_tcp_recv(st->stream, chunk.data(), chunk.size());
+        int n = streamOps.recv(st->stream, chunk.data(), chunk.size());
         if (n == 0) {
             TS_LOG_INFO("Tailscale: peer closed connection");
             break;
@@ -157,18 +146,14 @@ static void writerLoop(std::shared_ptr<ConnState> st)
             chunk.clear();
             chunk.swap(st->txBuf);
         }
-        // Signal *handoff*, not delivery, and do it before sending. StreamAPI
-        // calls flush() on the scheduler thread after every packet; waiting
-        // for the send to complete would park that thread on a stalled DERP
-        // relay for an unbounded time -- the exact stall this whole design
-        // exists to avoid.
+        // Handoff, not delivery: StreamAPI flushes on the scheduler after every packet.
         st->txDrained.notify_all();
 
         // `ts_tcp_send` returns once *at least one* byte is written, so a
         // single call is not enough -- loop until the chunk is gone.
         size_t off = 0;
         while (off < chunk.size()) {
-            int n = ts_tcp_send(st->stream, chunk.data() + off, chunk.size() - off);
+            int n = streamOps.send(st->stream, chunk.data() + off, chunk.size() - off);
             if (n <= 0) {
                 TS_LOG_WARN("Tailscale: send failed (%d), dropping connection", n);
                 st->peerUp.store(false);
@@ -184,41 +169,10 @@ static void writerLoop(std::shared_ptr<ConnState> st)
     st->txDrained.notify_all();
 }
 
-/**
- * Give threads created here a usable stack before spawning them.
- *
- * std::thread on ESP-IDF is a pthread, and pthreads get
- * CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT, which is 2048 bytes in the Arduino
- * libs. These threads call into the Rust tailscale stack, so 2 KiB is not
- * close to enough -- and a FreeRTOS stack overflow aborts the node rather than
- * failing the call, which makes it look like a crash in whatever ran next.
- *
- * esp_pthread_set_cfg applies to the calling thread and is inherited by
- * threads it creates, so this must run on the thread doing the spawning,
- * immediately before it.
- */
-// Stack sizes, in bytes.
-//
-// TS_TOKIO_STACK only selects placement: Rust sets the pthread attr size
-// explicitly (thread_stack_size in ts_ffi, 64 KiB), which overrides this.
-//
-// The bring-up thread must be internal -- it does the key-state file I/O -- and
-// it also polls the join future via block_on, so it gets the largest internal
-// stack. Affordable because tokio's stacks are no longer in internal DRAM.
-// Everything else only touches sockets, so it lives in PSRAM with room to
-// spare. Bring-up measured on a Heltec V4: 16.8 KB used through the join.
+// Stack sizes in bytes. TS_TOKIO_STACK only sets placement (Rust sets the size); bring-up is internal for file I/O.
 static constexpr size_t TS_TOKIO_STACK = 64 * 1024;
 
-// FreeRTOS priority for every Tailscale thread, and everything tokio spawns.
-//
-// Equal to Arduino's loopTask (created at priority 1 in cores/esp32/main.cpp),
-// which runs all of Meshtastic. pthreads default to 5
-// (CONFIG_PTHREAD_TASK_PRIO_DEFAULT), and under FreeRTOS a busy higher-priority
-// task starves lower ones outright -- observed when a real tailnet join made
-// tailscale-rs probe every DERP region at once: ts_tokio held CPU 1 for ~94s,
-// loopTask never ran, and the 90s task watchdog reset the chip. At equal
-// priority FreeRTOS time-slices each 1 ms tick, so Tailscale work can slow the
-// mesh down but never stop it.
+// Loop-task priority: at pthreads' default of 5 a busy tokio worker starved Meshtastic into the 90 s watchdog.
 #ifdef ARCH_ESP32
 static constexpr size_t TS_THREAD_PRIORITY = 1; // esp_pthread_cfg_t::prio is a size_t
 #endif
@@ -228,12 +182,7 @@ static constexpr size_t TS_IO_STACK = 24 * 1024;
 
 #ifdef MESHTASTIC_SIMULATOR_NO_LORA
 #include <lwip/sockets.h>
-/// SIMULATOR DIAGNOSTIC: how many lwIP sockets are free right now, found by
-/// opening UDP sockets until the table is full and closing them again. The
-/// Arduino libs cap lwIP at 16 sockets (CONFIG_LWIP_MAX_SOCKETS), shared with
-/// Meshtastic's API server, web servers, mDNS and NTP -- and a real tailnet
-/// join exhausted them. Briefly holds every free socket, so anything else that
-/// opens one in that instant fails: fine for a diagnostic build, not for a node.
+/// Simulator diagnostic: free lwIP sockets, by opening UDP sockets until the table is full.
 static int countFreeSockets()
 {
     int fds[32];
@@ -250,17 +199,10 @@ static int countFreeSockets()
 }
 #endif
 
-/// Report internal-DRAM headroom. Thread stacks come from here, and how much is
-/// left depends on what else has started (WiFi, mDNS, two web servers), so the
-/// sizes above are only defensible next to a measurement.
+/// Internal-RAM headroom, with MESHTASTIC_TAILSCALE_DIAGNOSTICS. esp_rom_printf, so it survives an abort.
 static void logInternalHeap(const char *when)
 {
-#ifdef ARCH_ESP32
-    // esp_rom_printf, not TS_LOG_INFO. The deferred queue is drained by the
-    // scheduler, so anything logged through it is lost when the point of
-    // logging is immediately followed by an abort -- which is exactly the case
-    // this measurement exists to diagnose. esp_rom_printf goes straight to the
-    // UART and is safe from any thread.
+#if defined(ARCH_ESP32) && defined(MESHTASTIC_TAILSCALE_DIAGNOSTICS)
     esp_rom_printf("Tailscale: heap %s: internal %u free (%u largest), psram %u free\n", when,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -270,36 +212,10 @@ static void logInternalHeap(const char *when)
 #endif
 }
 
-/**
- * Where a thread's stack is allocated from.
- *
- * Internal DRAM is scarce -- by the time the tailnet comes up, WiFi, mDNS and
- * two web servers have taken most of the ~220KB the chip starts with, and
- * pthread_create fails with ENOMEM (tokio reports "OS can't spawn worker
- * thread: Not enough space" and panics, which aborts the node).
- *
- * PSRAM has ~2MB free and the board sets CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY,
- * but a stack there carries a hard restriction: a task running on an external
- * stack must never be the one that disables the flash cache. Any SPI flash
- * write does that, so a thread touching LittleFS trips
- *
- *   assert failed: spi_flash_disable_interrupts_caches_and_other_cpu
- *                  (esp_task_stack_is_sane_cache_disabled())
- *
- * So: threads that do file I/O get Internal, threads that only do network and
- * compute get Psram.
- */
+/// Stacks for file I/O must be internal: a task on a PSRAM stack may not disable the flash cache.
 enum class StackMem { Internal, Psram };
 
-/**
- * Configure the stack for threads created *after* this call.
- *
- * esp_pthread_set_cfg applies to the calling thread and is inherited by threads
- * it creates -- it does not move the caller's own stack, which is already
- * allocated. That is what lets the bring-up thread keep an internal stack for
- * its LittleFS access while handing PSRAM stacks to the tokio workers it
- * spawns moments later.
- */
+/// Stack for threads the caller creates after this; esp_pthread_set_cfg is per thread and inherited.
 static void setThreadStack(size_t bytes, const char *name, StackMem where)
 {
 #ifdef ARCH_ESP32
@@ -329,19 +245,13 @@ static void restoreThreadStackDefaults()
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// TailscaleConn
-// ---------------------------------------------------------------------------
-
 TailscaleConn::TailscaleConn(ts_tcp_stream *stream) : st(std::make_shared<ConnState>(stream)) {}
 
 std::shared_ptr<TailscaleConn> TailscaleConn::create(ts_tcp_stream *stream)
 {
     auto conn = std::shared_ptr<TailscaleConn>(new TailscaleConn(stream));
 
-    // Detached on purpose: neither worker can be interrupted while parked in a
-    // blocking ts_ffi call, so joining them would be a hang waiting to happen.
-    // Their `shared_ptr<ConnState>` copies keep the state valid regardless.
+    // Detached: a blocked ts_ffi call can't be interrupted, and the shared state outlives the handles.
     setThreadStack(TS_IO_STACK, "ts_io", StackMem::Psram);
     std::thread(readerLoop, conn->st).detach();
     std::thread(writerLoop, conn->st).detach();
@@ -404,12 +314,7 @@ size_t TailscaleConn::write(const uint8_t *buf, size_t size)
         if (!st->peerUp.load() || !st->running.load())
             return 0;
 
-        // All or nothing. StreamAPI::emitTxBuffer hands us a whole framed
-        // packet and ignores our return value, so accepting a prefix would put
-        // a truncated frame on the wire and the peer would fail to decode --
-        // the same torn-frame class of bug the `streamLock` in StreamAPI.h was
-        // added to fix. Dropping the connection is recoverable; a corrupt
-        // stream is not.
+        // All or nothing: StreamAPI ignores the return, so a prefix would put a torn frame on the wire.
         const size_t room = st->txBuf.size() < TS_TX_BUFFER_LIMIT ? TS_TX_BUFFER_LIMIT - st->txBuf.size() : 0;
         if (size > room) {
             TS_LOG_ERROR("Tailscale: tx queue full (%u queued, %u needed), dropping connection",
@@ -456,7 +361,7 @@ void TailscaleConn::close()
         return;
     // FIN, so a client the node drops (idle timeout, replaced by a newer one) knows at once rather than at its next write.
     if (st->running.exchange(false) && st->stream)
-        ts_tcp_shutdown(st->stream);
+        streamOps.shutdown(st->stream);
     st->rxDrained.notify_all();
     st->txPending.notify_all();
     st->txDrained.notify_all();
@@ -478,10 +383,6 @@ std::string TailscaleConn::remoteAddr()
 }
 
 } // namespace tailscale_shim
-
-// ---------------------------------------------------------------------------
-// TailscaleClient
-// ---------------------------------------------------------------------------
 
 int TailscaleClient::available()
 {
@@ -544,10 +445,6 @@ int TailscaleClient::connect(const char *, uint16_t)
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// TailscaleServer
-// ---------------------------------------------------------------------------
-
 TailscaleServer::AcceptState::~AcceptState()
 {
     // Same ownership rule as ConnState: only safe once the acceptor has let go.
@@ -567,28 +464,16 @@ void TailscaleServer::begin()
     accepting = std::make_shared<AcceptState>();
     accepting->port = port;
 
-    // Everything the tailnet needs -- ts_init, ts_ipv4_addr, ts_tcp_listen --
-    // blocks, and this is called from setup(). Hand the lot to a thread and
-    // return, or a slow control server delays the radio coming up. On ESP32
-    // that delay would be a watchdog reset rather than just a late boot.
-    // The bring-up thread runs the tailnet join, which goes through the TLS
-    // handshake, so it needs the deepest stack of the three.
+    // Joining blocks for seconds, and this runs from setup(), so bring-up gets its own thread.
     tailscale_shim::setThreadStack(tailscale_shim::TS_BRINGUP_STACK, "ts_bringup", tailscale_shim::StackMem::Internal);
     std::thread(bringUpLoop, accepting).detach();
-    // This runs on Meshtastic's main thread, and the pthread config is sticky
-    // per thread: without this, any pthread it created later would silently
-    // inherit the bring-up thread's internal-DRAM stack size.
+    // esp_pthread_set_cfg is sticky per thread: restore it for the scheduler's own later threads.
     tailscale_shim::restoreThreadStackDefaults();
 }
 
 void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
 {
-    // Retry until the listener is up, rather than giving up after one failure.
-    // This used to return on the first error, so a single failed step -- or a
-    // control reconnect misread as a rejection -- left the node off the tailnet
-    // until reboot. Backoff 5s doubling to 5 minutes: generous enough not to
-    // spend a battery node's charge on a network that is down, short enough to
-    // come back without anyone noticing.
+    // Retry until listening; backoff 5 s doubling to 5 min spares a battery when the network is down.
     for (uint32_t attempt = 1; as->running.load(); attempt++) {
         if (TailscaleTransport::begin()) {
             ts_device *dev = TailscaleTransport::device();
@@ -618,7 +503,7 @@ void TailscaleServer::bringUpLoop(std::shared_ptr<AcceptState> as)
     if (!as->listener)
         return; // shutting down
 
-#ifdef ARCH_ESP32
+#if defined(ARCH_ESP32) && defined(MESHTASTIC_TAILSCALE_DIAGNOSTICS)
     // The join ran on this thread, so this is TS_BRINGUP_STACK's measured peak.
     esp_rom_printf("Tailscale: bring-up thread stack: %u of %u bytes never used\n",
                    (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)tailscale_shim::TS_BRINGUP_STACK);
@@ -647,7 +532,7 @@ void TailscaleServer::acceptLoop(std::shared_ptr<AcceptState> as)
 
         auto conn = tailscale_shim::TailscaleConn::create(stream);
         TS_LOG_INFO("Tailscale: incoming connection from %s", conn->remoteAddr().c_str());
-#ifdef ARCH_ESP32
+#if defined(ARCH_ESP32) && defined(MESHTASTIC_TAILSCALE_DIAGNOSTICS)
         static bool reportedAcceptStack = false;
         if (!reportedAcceptStack) {
             reportedAcceptStack = true;
@@ -680,14 +565,8 @@ TailscaleServer::~TailscaleServer()
 {
     if (accepting)
         accepting->running.store(false);
-    // The acceptor is parked in `ts_tcp_accept` and cannot be woken with
-    // unmodified ts_ffi; it holds the state alive and tears the listener down
-    // on its way out. See TailscaleConn::close() for the upstream fix.
+    // The acceptor may be blocked in ts_tcp_accept; it holds the state and closes the listener on exit.
 }
-
-// ---------------------------------------------------------------------------
-// TailscaleTransport
-// ---------------------------------------------------------------------------
 
 namespace TailscaleTransport
 {
@@ -705,21 +584,7 @@ void configure(const std::string &stateFile, const std::string &authKey, const s
     gHostname = hostname;
 }
 
-/**
- * Register the eventfd VFS, which tokio's IO driver needs to exist.
- *
- * tokio builds a waker out of an eventfd. On Linux that syscall is always
- * there; on ESP-IDF eventfd is a VFS driver that nothing registers for you, so
- * eventfd() fails with EACCES and *runtime construction itself* fails. What
- * surfaced was a Rust panic inside LazyLock<Runtime> with
- * `Os { code: 13, kind: PermissionDenied }` -- which names neither eventfd nor
- * tokio, and aborts the node into a reboot loop because a panic on a detached
- * thread takes the whole process down.
- *
- * Registering is idempotent from our side: a second call returns
- * ESP_ERR_INVALID_STATE, which is not an error for us. max_fds is the default
- * 5; tokio needs one.
- */
+/// tokio's IO driver needs an eventfd, which ESP-IDF only provides once this VFS is registered.
 static void registerEventFd()
 {
 #ifdef ARCH_ESP32
@@ -748,15 +613,7 @@ bool begin()
     // forces the LazyLock, and that is where the eventfd is needed.
     registerEventFd();
 
-    // PSRAM for every thread tokio creates from here on. Safe only because no
-    // tokio thread does file I/O on ESP-IDF: tailscale-rs's key-state access
-    // runs on the thread polling block_on -- this one, whose stack is internal
-    // -- rather than on tokio's blocking pool (key_fs in src/config.rs). Before
-    // that change it went through tokio::fs, and a PSRAM-stacked pool thread
-    // disabling the flash cache asserted in esp_task_stack_is_sane_cache_disabled.
-    //
-    // inherit_cfg carries this to threads tokio's own threads spawn later
-    // (the blocking pool, for DNS), which also never touch flash.
+    // PSRAM stacks for tokio's threads: safe because key-state file I/O stays on this internal-stack thread.
     tailscale_shim::logInternalHeap("before tokio runtime");
 #ifdef MESHTASTIC_SIMULATOR_NO_LORA
     esp_rom_printf("Tailscale: lwIP sockets free before tailnet start: %d\n", tailscale_shim::countFreeSockets());
@@ -765,9 +622,7 @@ bool begin()
 
     ts_init_tracing();
 
-    // Node identity persists across restarts so the node keeps its tailnet IP;
-    // `true` regenerates the file if it is missing or corrupt, which is what
-    // makes first boot work without a separate provisioning step.
+    // `true` creates the identity file on first boot; it keeps the node's tailnet IP across restarts.
     ts_persisted_key_state keys = {};
     if (ts_load_key_file(gStateFile.c_str(), true, &keys) < 0) {
         TS_LOG_ERROR("Tailscale: could not load or create key state at %s", gStateFile.c_str());
@@ -790,18 +645,10 @@ bool begin()
         return false;
     }
 
-    // A non-null device is NOT proof of a join. When the control server
-    // rejects the node (a bad or spent auth key -> MachineNotAuthorized),
-    // ts_init still hands back a device and only the absence of an address
-    // gives it away. Without this check the log claimed "joined tailnet" with
-    // an empty IP and the real cause was buried in Rust-side tracing.
+    // ts_init returns a device even when control rejects the node; only a missing address shows it.
     const std::string addr = ipv4();
     if (addr.empty()) {
-        // Reached only on a non-transient error now: ts_ipv4_addr waits through
-        // control reconnects. This used to say the control server had rejected
-        // the node, which was also what a reconnect in progress looked like --
-        // and tearing down there killed the reconnection. The cause, bad key
-        // included, is in the tailscale-rs log line just before this one.
+        // Non-transient: ts_ipv4_addr waits through control reconnects. The cause is in the log above.
         TS_LOG_ERROR("Tailscale: could not obtain a tailnet address (cause in the tailscale-rs log above)");
         end();
         return false;

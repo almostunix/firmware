@@ -23,66 +23,13 @@
 
 #include "tailscale.h"
 
-/**
- * Arduino-shaped shim over the tailscale-rs C FFI (ts_ffi / libtailscalers).
- *
- * ## Why this layer exists
- *
- * Meshtastic's phone API is already generic over its transport:
- * `ServerAPI<T>` and `APIServerPort<T, U>` (mesh/api/ServerAPI.cpp) only ever
- * touch `begin()`, `available()`, `connected()`, `stop()` and the `Stream`
- * read/write surface. Exposing the API on a tailnet therefore needs no change
- * to PhoneAPI/StreamAPI at all -- only a `Client`/`Server` pair backed by
- * tailscale-rs' userspace netstack instead of lwIP.
- *
- * ## The impedance mismatch this layer absorbs
- *
- * ts_ffi's TCP surface is *blocking only*. No timeout, no poll, no
- * non-blocking variant, no "bytes available" query:
- *
- *   - `ts_tcp_accept` blocks until a peer connects.
- *   - `ts_tcp_recv`   blocks until at least one byte arrives; returns 0 on
- *                     peer hangup, negative on error.
- *   - `ts_tcp_send`   blocks until at least one byte is written, and may
- *                     perform a *partial* write, so callers must loop.
- *   - there is no `connected()` equivalent.
- *
- * Meshtastic is the opposite shape: `APIServerPort::runOnce()` is polled from
- * the cooperative OSThread scheduler roughly every 100 ms, and `available()` /
- * `read()` must return immediately. A blocking call on that thread stalls the
- * whole firmware loop, radio servicing included.
- *
- * So each connection owns two threads that block on its behalf: a reader
- * draining `ts_tcp_recv` into a bounded rx buffer, and a writer draining a tx
- * queue into `ts_tcp_send`. The scheduler thread only ever touches those
- * buffers under a mutex. The listener gets the same treatment via an acceptor
- * thread.
- *
- * The write queue is not an optimisation -- it is required. StreamAPI has two
- * independent paths that call `stream->write()` (the packet path and the log
- * record path; see the `streamLock` comment in StreamAPI.h), so writes arrive
- * from more than one thread by design.
- */
+// Arduino Client/Server over tailscale-rs's blocking TCP (ts_ffi), so ServerAPI can serve a tailnet.
+// Design notes: TAILSCALE.md, "How the socket shim works".
 
 namespace tailscale_shim
 {
 
-/**
- * Thread-safe logging for the worker threads.
- *
- * Meshtastic's LOG_ macros are not safe off the scheduler thread.
- * `RedirectablePrint::log()` writes into a console buffer allocated once at
- * startup, and `log_to_serial()` reads the global
- * `concurrency::OSThread::currentThread` that `OSThread::run()` writes every
- * tick -- ThreadSanitizer flags both as races when a worker logs. Upstream
- * never hits this because portduino's scheduler is cooperative and
- * single-threaded; the worker threads here are what introduce it. And because
- * RedirectablePrint also feeds `emitLogRecord()`, a racing log can corrupt the
- * protobuf log stream, not merely garble the console.
- *
- * So workers queue their messages and the scheduler emits them from
- * `TailscaleServerPort::runOnce()`, where LOG_ is safe again.
- */
+// LOG_ is not thread-safe, so worker threads queue lines for the scheduler to emit.
 enum class LogLevel { Info, Warn, Error };
 
 /// Queue a log line. Safe from any thread; never blocks on the scheduler.
@@ -93,8 +40,6 @@ void drainDeferredLogs();
 
 } // namespace tailscale_shim
 
-/// Worker-thread logging. Same shape as LOG_INFO/LOG_WARN/LOG_ERROR, but
-/// queued for the scheduler instead of touching RedirectablePrint directly.
 #define TS_LOG_INFO(...) tailscale_shim::deferLog(tailscale_shim::LogLevel::Info, __VA_ARGS__)
 #define TS_LOG_WARN(...) tailscale_shim::deferLog(tailscale_shim::LogLevel::Warn, __VA_ARGS__)
 #define TS_LOG_ERROR(...) tailscale_shim::deferLog(tailscale_shim::LogLevel::Error, __VA_ARGS__)
@@ -132,34 +77,25 @@ using ByteDeque = std::deque<uint8_t>;
 using ByteVector = std::vector<uint8_t>;
 #endif
 
-/// Upper bound on buffered rx bytes per connection. The reader parks once this
-/// is reached and resumes as the scheduler drains it, giving us TCP
-/// backpressure instead of unbounded growth behind a stalled consumer.
+/// The ts_ffi calls a connection makes. A seam for unit tests, which substitute a fake peer.
+struct StreamOps {
+    decltype(&ts_tcp_recv) recv;
+    decltype(&ts_tcp_send) send;
+    decltype(&ts_tcp_shutdown) shutdown;
+    decltype(&ts_tcp_close) close;
+};
+extern StreamOps streamOps;
+
+/// The reader stops here until the scheduler drains it: TCP backpressure.
 static constexpr size_t TS_RX_BUFFER_LIMIT = 8 * 1024;
 
-/// Upper bound on queued tx bytes. `write()` must not block the scheduler, so
-/// an over-full queue reports a short write -- the contract `Print::write`
-/// already has.
+/// write() never blocks; a frame that doesn't fit drops the connection instead.
 static constexpr size_t TS_TX_BUFFER_LIMIT = 16 * 1024;
 
-/// Longest `flush()` waits for the writer. Past this the peer is treated as gone, like a stalled
-/// lwIP write on the WiFi API; waiting longer would stall the mesh loop toward the 90 s watchdog.
+/// Longest flush() waits for the writer before treating the peer as gone, as a stalled lwIP write is.
 static constexpr uint32_t TS_FLUSH_TIMEOUT_MS = 5000;
 
-/**
- * State shared between a connection's worker threads and its handles.
- *
- * This is deliberately split out from `TailscaleConn` so the workers can be
- * *detached* and still be guaranteed a live place to write into: each worker
- * holds its own `shared_ptr<ConnState>`, so the state outlives any handle.
- *
- * It also decides who closes the socket. `ts_tcp_close` consumes the
- * `Box<tcp_stream>` while `ts_tcp_recv` / `ts_tcp_send` hold a `&tcp_stream`,
- * so closing while a worker is inside either call would alias a Box that is
- * being dropped -- undefined behaviour on the Rust side. Putting the close in
- * `~ConnState` means it runs only once the last worker *and* the last handle
- * are gone, so no reference can still be outstanding.
- */
+/// Shared by a connection's handles and detached workers; ~ConnState closes the socket, once none remain.
 struct ConnState {
     explicit ConnState(ts_tcp_stream *s) : stream(s) {}
     ~ConnState();
@@ -185,13 +121,7 @@ struct ConnState {
     std::atomic<bool> running{true};
 };
 
-/**
- * One live tailnet TCP connection.
- *
- * Handles are shared by `shared_ptr` because `ServerAPI<T>` stores its client
- * *by value* and copies it during construction -- the same arrangement
- * `WiFiClient` uses, where copies share one refcounted socket underneath.
- */
+/// One tailnet TCP connection. Shared by shared_ptr, as ServerAPI copies its client by value.
 class TailscaleConn
 {
   public:
@@ -211,24 +141,15 @@ class TailscaleConn
     /// Consume up to `size` buffered bytes. Never blocks. Returns count moved.
     size_t read(uint8_t *buf, size_t size);
 
-    /// Queue bytes for the writer, all or nothing. Never blocks. Returns the
-    /// count queued: either `size`, or 0 if the queue could not take the whole
-    /// buffer (in which case the connection is dropped rather than a partial
-    /// frame emitted).
+    /// Queue bytes for the writer, all or nothing (0 drops the connection). Never blocks.
     size_t write(const uint8_t *buf, size_t size);
-    /// Wait until queued bytes have been handed to the writer thread.
-    ///
-    /// Deliberately *not* a delivery barrier: StreamAPI calls this from the
-    /// scheduler thread after every packet, so blocking until bytes reach the
-    /// wire would stall the firmware loop whenever the relay is slow.
+    /// Wait, at most TS_FLUSH_TIMEOUT_MS, for the writer to take the queue: handoff, not delivery.
     void flush();
 
     /// True while the peer is up or buffered rx data remains unread.
     bool connected();
 
-    /// Ask the workers to wind down and send the peer a FIN. Safe from any thread; never blocks.
-    /// The socket itself is freed in `~ConnState`, once the reader sees the peer close (or the
-    /// netstack's keep-alive times a vanished peer out).
+    /// Stop the workers and send the peer a FIN. Any thread; never blocks.
     void close();
 
     /// Remote endpoint, for logging.
@@ -242,14 +163,7 @@ class TailscaleConn
 
 } // namespace tailscale_shim
 
-/**
- * `Client` over a tailnet TCP stream. Satisfies the `T` in `ServerAPI<T>`.
- *
- * Copyable and cheap to copy; copies share one connection. A
- * default-constructed instance is the "no connection" sentinel and converts to
- * false, which is what `APIServerPort::runOnce()` tests when it asks the server
- * whether anyone is waiting.
- */
+/// Client over a tailnet stream; copies share a connection, and a default one means "none waiting".
 class TailscaleClient : public Client
 {
   public:
@@ -270,13 +184,7 @@ class TailscaleClient : public Client
     uint8_t connected() override;
     operator bool() override { return conn != nullptr; }
 
-    /**
-     * Outbound connects are out of scope.
-     *
-     * The node is a tailnet *server*: it listens so a phone or CLI can reach
-     * the existing API. `Client` makes these pure virtual, so they are
-     * implemented as explicit failures rather than left to surprise anyone.
-     */
+    // The node only listens; Client makes these pure virtual.
     int connect(IPAddress ip, uint16_t port) override;
     int connect(const char *host, uint16_t port) override;
 
@@ -284,40 +192,27 @@ class TailscaleClient : public Client
     std::shared_ptr<tailscale_shim::TailscaleConn> conn;
 };
 
-/**
- * `Server` over a tailnet TCP listener. Satisfies the `U` in
- * `APIServerPort<T, U>`.
- */
+/// Server over a tailnet listener, for APIServerPort.
 class TailscaleServer : public Server
 {
   public:
     explicit TailscaleServer(int port) : port(port) {}
     ~TailscaleServer();
 
-    /// Start bringing the tailnet listener up. Returns immediately; the join
-    /// and the bind happen on a background thread, and `available()` simply
-    /// reports nothing until they finish.
+    /// Join and listen on a background thread; available() reports nothing until then.
     void begin() override;
 
-    /// Hand over a pending connection, or a falsy client if none is waiting.
-    /// Never blocks -- this runs on the scheduler thread.
+    /// A pending connection, or a falsy client. Never blocks.
     TailscaleClient available();
 
-    /// Alias for `available()`.
-    ///
-    /// `APIServerPort::runOnce()` chooses between the two by architecture:
-    /// portduino takes `available()`, while ARCH_ESP32 on Arduino core >= 3.0.0
-    /// -- which is exactly the heltec-v4 target -- takes `accept()`. Providing
-    /// both means the same shim compiles on the board without an #ifdef here.
+    /// APIServerPort calls accept() on Arduino-ESP32 3.x and available() elsewhere.
     TailscaleClient accept() { return available(); }
 
     /// `Server` inherits `Print`; a listener has nothing to write to.
     size_t write(uint8_t) override { return 0; }
 
   private:
-    /// Shared with the detached bring-up thread, for the same reason
-    /// `ConnState` is shared with the connection workers: that thread parks
-    /// inside `ts_tcp_accept` and must have somewhere valid to deliver into.
+    /// Shared with the detached accept thread, which may be blocked in ts_tcp_accept.
     struct AcceptState {
         ~AcceptState();
         int port = 0;
@@ -327,12 +222,7 @@ class TailscaleServer : public Server
         std::deque<std::shared_ptr<tailscale_shim::TailscaleConn>> pending;
     };
 
-    /// Joins the tailnet, opens the listener, then accepts forever.
-    ///
-    /// All three steps block, so all three live off the scheduler thread.
-    /// `ts_ipv4_addr` in particular has been measured taking 33 seconds to
-    /// return when the control server rejects the node, which stalled the
-    /// whole of meshtasticd's startup when this ran inline.
+    /// Join and listen (retrying), then hand over to acceptLoop. Both block, so neither runs on the scheduler.
     static void bringUpLoop(std::shared_ptr<AcceptState> as);
     static void acceptLoop(std::shared_ptr<AcceptState> as);
 
@@ -340,20 +230,12 @@ class TailscaleServer : public Server
     std::shared_ptr<AcceptState> accepting;
 };
 
-/**
- * Process-wide tailscale-rs device.
- *
- * Brought up once, before any listener. Phase 1 reads its settings from a
- * plain file rather than from ModuleConfig, so no protobuf or config-schema
- * change is needed yet.
- */
+/// The process-wide tailscale-rs device. Settings come from /prefs/tailscale.conf, not ModuleConfig.
 namespace TailscaleTransport
 {
 /// Record the settings `begin()` will use. Called on the startup thread.
 void configure(const std::string &stateFile, const std::string &authKey, const std::string &hostname);
-/// Bring up the tailnet device using the configured settings. Blocks, so call
-/// it off the scheduler thread. Idempotent; true only once the node is
-/// actually registered and holds a tailnet IPv4.
+/// Join the tailnet. Blocks; idempotent; true once the node holds a tailnet IPv4.
 bool begin();
 /// Tear down the device, if any, so `begin()` can start over.
 void end();
