@@ -4,9 +4,9 @@ Versions of the Heltec V4 Tailscale build, newest first. Tagged releases are `he
 this repository and the tailscale-rs fork. Board results are over a real tailnet, relayed through DERP.
 How the code works now is in [TAILSCALE.md](TAILSCALE.md).
 
-## v1.5 (unreleased)
+## v1.5 (2026-09-28)
 
-Reorganisation after a code review; behaviour is meant to be unchanged.
+Reorganisation after a code review; same behaviour as v1.4. Reports `2.7.26.c44e6ae`.
 
 - tailscale-rs is now a git submodule (`tailscale-rs/`), so each firmware commit records the
   tailscale-rs commit it needs. `TAILSCALE_RS_DIR` still overrides it, and the build warns when the
@@ -22,6 +22,9 @@ Reorganisation after a code review; behaviour is meant to be unchanged.
   try to build them.
 - This file and a rewritten `TAILSCALE.md` replace the engineering log; comments trimmed to the house
   style; the unused `partition-table-16MB-noota.csv` is gone.
+- **Board:** joined the tailnet 10 s after start; the registered mbedTLS verifier passed its self-test in
+  2,840 ms. 15/15 sessions, TCP connect median 66 ms, config download median 669 ms. Free internal RAM
+  74,264 → 74,132 bytes across about 35 sessions; no reboot.
 
 ## v1.4 (2026-09-28)
 

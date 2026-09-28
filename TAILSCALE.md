@@ -14,8 +14,8 @@ the commit messages.
 ## Status
 
 - **Tested on:** Heltec WiFi LoRa 32 V4 (ESP32-S3, 16 MB flash, 2 MB PSRAM), and natively on macOS.
-- **On the board (v1.4):** 15 of 15 API sessions succeed over the tailnet. TCP connect takes a median
-  of 81 ms and a full config download 606 ms. Free internal RAM stays flat at about 72 KB across dozens
+- **On the board (v1.5):** 15 of 15 API sessions succeed over the tailnet. TCP connect takes a median
+  of 66 ms and a full config download 669 ms. Free internal RAM stays flat at about 74 KB across dozens
   of sessions, with no reboots.
 - **tailscale-rs is beta.** It has no direct connections yet, so all tailnet traffic goes through
   Tailscale's DERP relays.
@@ -122,7 +122,7 @@ The native build exercises none of this; each item cost a boot loop to find.
 | Accept | 16 KB | PSRAM | Accepts and starts connection threads |
 | Per connection: reader, writer | 24 KB each | PSRAM | |
 
-With WiFi and Tailscale up and idle, about 72 KB of internal RAM stays free.
+With WiFi and Tailscale up and idle, about 74 KB of internal RAM stays free.
 
 ## Security
 
