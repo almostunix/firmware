@@ -60,8 +60,23 @@ multilib's headers, and no fix counts until it has run on the board.
 - Upstream bug: the control dial plan ignored candidate priority (compared the
   best candidate with itself).
 
-**Open:** the ~700 bytes lost per API session on v1.0 (~300 for a bare
-connect). Re-measure on the fixed build before chasing it. `tailscale ping --icmp` gets no
+**The per-session RAM loss, found (v1.2 measurements, 2026-09-28).** Probing
+the board over the tailnet with different session types isolated it: junk
+bytes that only the reader thread handles cost ~363 bytes, a single heartbeat
+that also makes the writer send cost ~719, and config downloads with or
+without the file manifest cost the same as the heartbeat. So each connection
+thread lost ~350 bytes once it had called into Rust, whatever the call did.
+
+Cause: the netstack's `*_blocking` calls park via flume, which uses
+`std::thread::current()`. That creates a std `Thread` handle per foreign
+thread, holding a pthread mutex and condvar that ESP-IDF allocates in internal
+RAM. std frees the handle in a deferred second round of TLS destructors,
+reading it from a TLS slot without a destructor, but ESP-IDF's pthread TLS
+cleanup frees every slot in list order before that round runs. The handle is
+never found, never freed. tailscale-rs 4908840 blocks through tokio's
+`block_on` instead (its parker is a thread-local with a destructor), and keeps
+the blocking pool's threads rather than retiring them every 10 s. Worth
+reporting to esp-rs: any foreign thread calling `thread::current()` leaks. `tailscale ping --icmp` gets no
 reply (the netstack does not answer echo); TCP is unaffected. Direct
 (non-DERP) paths are upstream "coming soon", so all traffic is relayed.
 
