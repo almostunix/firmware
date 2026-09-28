@@ -76,7 +76,13 @@ cleanup frees every slot in list order before that round runs. The handle is
 never found, never freed. tailscale-rs 4908840 blocks through tokio's
 `block_on` instead (its parker is a thread-local with a destructor), and keeps
 the blocking pool's threads rather than retiring them every 10 s. Worth
-reporting to esp-rs: any foreign thread calling `thread::current()` leaks. `tailscale ping --icmp` gets no
+reporting to esp-rs: any foreign thread calling `thread::current()` leaks.
+
+Confirmed on the board with v1.3 (`2.7.26.7054460`, 2026-09-28): the same
+probes lost ~0 bytes per session (junk -107, heartbeat -67, config ~30, the
+15-session benchmark ~9: noise from the phone's LAN session and mesh traffic),
+where v1.2 lost ~363 / ~719 / ~742 / ~710. About 47 sessions moved free
+internal RAM from 74.1 KB to 73.4 KB. 15/15 sessions, no reboot. `tailscale ping --icmp` gets no
 reply (the netstack does not answer echo); TCP is unaffected. Direct
 (non-DERP) paths are upstream "coming soon", so all traffic is relayed.
 
