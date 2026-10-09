@@ -62,8 +62,11 @@ if git(ts_root, "status", "--porcelain", "--untracked-files=no"):
     print("tailscale: WARNING: %s has uncommitted changes" % ts_root)
 print("tailscale: linking %s (tailscale-rs %s)" % (archive, actual[:12] or "unknown"))
 
-# The header comes from the same checkout as the archive (cbindgen writes it there).
-projenv.Append(CPPPATH=[os.path.join(ts_root, "ts_ffi")])
+# The header comes from the same checkout as the archive; cbindgen writes it there.
+ffi_dir = os.path.join(ts_root, "crates", "bindings", "ts_ffi")
+if not os.path.isdir(ffi_dir):
+    ffi_dir = os.path.join(ts_root, "ts_ffi")  # tailscale-rs before its crates/ layout
+projenv.Append(CPPPATH=[ffi_dir])
 
 # LIBS, not build_flags (SCons mangles a .a there) or LINKFLAGS (GNU ld needs it
 # after the objects).

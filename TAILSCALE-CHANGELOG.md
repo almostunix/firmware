@@ -4,6 +4,12 @@ Versions of the Heltec V4 Tailscale build, newest first. Tagged releases are `he
 this repository and the tailscale-rs fork. Board results are over a real tailnet, relayed through DERP.
 How the code works now is in [TAILSCALE.md](TAILSCALE.md).
 
+## Unreleased
+
+- tailscale-rs's crates are grouped into `crates/` and `tools/`, as upstream's `main` now does. The build
+  finds `tailscale.h` in either layout. No change to the firmware's code, and the image is the same size:
+  the ESP32 build keeps the embedded source paths in their old, shorter form.
+
 ## v1.5 (2026-09-28)
 
 Reorganisation after a code review; same behaviour as v1.4. Reports `2.7.26.c44e6ae`.

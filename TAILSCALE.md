@@ -98,7 +98,8 @@ The native build exercises none of this; each item cost a boot loop to find.
 - **Flash I/O needs an internal-RAM stack.** A task on a PSRAM stack may not disable the flash cache,
   which every flash write does. Only the bring-up thread touches flash (the key state), so every other
   thread runs on PSRAM.
-- **Rust's heap is PSRAM first** (`ts_ffi/src/esp_alloc.rs`), and so is mbedTLS (`MbedtlsPsram.cpp`).
+- **Rust's heap is PSRAM first** (tailscale-rs's `crates/bindings/ts_ffi/src/esp_alloc.rs`), and so is
+  mbedTLS (`MbedtlsPsram.cpp`).
 - **Low thread priority.** At pthreads' default priority a busy tokio worker starved Meshtastic's loop
   into the 90 s watchdog; the shim's threads run at priority 1.
 - **Embedder threads must not call `std::thread::current()`.** On ESP-IDF, each foreign thread that
@@ -194,8 +195,8 @@ Espressif's QEMU does not boot Meshtastic's ESP32-S3 firmware (bootloader PSRAM 
 - **Relay only.** tailscale-rs has no direct connections yet, and its netstack does not answer ICMP,
   so `tailscale ping --icmp` gets no reply (TCP is unaffected).
 - **First join spends ~3 s** on the ECDSA self-test.
-- **DERP keepalives are not timed** (an upstream TODO in `ts_derp/src/client.rs`), so a dead relay
-  connection is noticed late.
+- **DERP keepalives are not timed** (an upstream TODO in tailscale-rs's
+  `crates/net/underlay/ts_derp/src/client.rs`), so a dead relay connection is noticed late.
 - **Not low power.** WiFi power save is off, and DERP's 60 s keepalive rules out duty cycling: treat a
   tailnet node as mains or solar powered.
 - **Bluetooth only runs with WiFi off,** as in stock Meshtastic.
