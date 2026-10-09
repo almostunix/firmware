@@ -1,6 +1,6 @@
 # Tailscale settings for a native (host) meshtasticd, one key=value per line.
 # Copy to tailscale.conf in meshtasticd's working directory, or point MESHTASTIC_TAILSCALE_CONFIG at it.
-# For a board, bin/ts-set-secret.sh writes data/prefs/tailscale.conf instead: see TAILSCALE-QUICKSTART.md.
+# For a board, bin/ts-set-secret.sh writes data/prefs/tailscale.conf instead: see tailscale/QUICKSTART.md.
 
 # Required. For a throwaway host node an ephemeral key keeps the machine list clean. Never commit a real one.
 authkey=tskey-auth-REPLACE-ME

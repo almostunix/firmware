@@ -15,13 +15,14 @@ case "$scenario" in
   dry|tailnet|diag-*) ;;
   *) echo "usage: $0 {dry|tailnet|diag-<name>}" >&2; exit 2 ;;
 esac
-[ -f "wokwi-scenarios/$scenario.yaml" ] || { echo "no scenario wokwi-scenarios/$scenario.yaml" >&2; exit 2; }
+# wokwi-cli resolves --scenario and wokwi.toml's paths against this directory.
+project=tailscale/wokwi
+[ -f "$project/scenarios/$scenario.yaml" ] || { echo "no scenario $project/scenarios/$scenario.yaml" >&2; exit 2; }
 
 # Diagnostics run on the dummy key, same as a dry run.
 key_mode=$scenario
 case "$scenario" in diag-*) key_mode=dry ;; esac
 
-file="wokwi-scenarios/$scenario.yaml"
 image=".pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.bin"
 
 [ -f .wokwi-env ] || { echo "no .wokwi-env -- run bin/ts-set-secret.sh wokwi" >&2; exit 2; }
@@ -88,10 +89,10 @@ watcher=$!
 started=$(date +%s)
 ~/.local/bin/wokwi-cli \
   --timeout "${WOKWI_TIMEOUT_MS:-290000}" \
-  --scenario "$file" \
+  --scenario "scenarios/$scenario.yaml" \
   --fail-text "Rebooting..." \
   --serial-log-file "$log" \
-  .
+  "$project"
 status=$?
 elapsed=$(( $(date +%s) - started ))
 kill "$watcher" 2>/dev/null

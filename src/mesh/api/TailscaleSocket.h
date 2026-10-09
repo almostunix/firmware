@@ -24,7 +24,7 @@
 #include "tailscale.h"
 
 // Arduino Client/Server over tailscale-rs's blocking TCP (ts_ffi), so ServerAPI can serve a tailnet.
-// Design notes: TAILSCALE.md, "How the socket shim works".
+// Design notes: tailscale/README.md, "How the socket shim works".
 
 namespace tailscale_shim
 {

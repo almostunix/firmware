@@ -2,13 +2,17 @@
 
 Versions of the Heltec V4 Tailscale build, newest first. Tagged releases are `heltec-v4-vX.Y` in both
 this repository and the tailscale-rs fork. Board results are over a real tailnet, relayed through DERP.
-How the code works now is in [TAILSCALE.md](TAILSCALE.md).
+How the code works now is in the [design notes](README.md).
 
 ## Unreleased
 
 - tailscale-rs's crates are grouped into `crates/` and `tools/`, as upstream's `main` now does. The build
   finds `tailscale.h` in either layout. No change to the firmware's code, and the image is the same size:
   the ESP32 build keeps the embedded source paths in their old, shorter form.
+- The branch's files at the top level moved into `tailscale/`: the design notes are its `README.md`,
+  next to `QUICKSTART.md`, `CHANGELOG.md`, `NOTICE.md` and `tailscale.conf.example`. The Wokwi config,
+  diagram, partition table and scenarios are in `tailscale/wokwi/`, and `bin/wokwi-run.sh` runs from
+  there.
 
 ## v1.5 (2026-09-28)
 
@@ -101,7 +105,7 @@ Bring-up on the board.
   relay by STUN, and served `meshtastic --info` over the tailnet in 4 s. A full DERP TLS handshake took
   1.7 s on the chip (22 s in the simulator with mbedTLS, 36 s with RustCrypto).
 - **2026-09-22, the Wokwi simulator.** Found the eventfd, thread-stack, watchdog, USB-serial and
-  no-radio problems (see TAILSCALE.md). tailscale-rs gained reconnection to control, relay choice by
+  no-radio problems (see the [design notes](README.md)). tailscale-rs gained reconnection to control, relay choice by
   STUN, and a WireGuard fix: the responder's replay check never fired, which stalled the first
   connection after ~2 minutes idle for ~30 s.
 - **2026-09-21, native proof.** `meshtasticd` on macOS served the phone API over a tailnet: `--info`,

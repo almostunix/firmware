@@ -1,9 +1,13 @@
 > [!NOTE]
 > **Unofficial Tailscale branch.** The `tailscale-heltec-v4` branch adds [Tailscale](https://tailscale.com)
 > so a node serves the Meshtastic phone API on your tailnet, with no port forwarding. It is not affiliated
-> with or endorsed by the Meshtastic project, Meshtastic LLC or Tailscale Inc. **Start here:**
-> [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md). Credits and licences:
-> [NOTICE-TAILSCALE.md](NOTICE-TAILSCALE.md).
+> with or endorsed by the Meshtastic project, Meshtastic LLC or Tailscale Inc. Tested on a Heltec WiFi
+> LoRa 32 V4. The branch's docs, example config and simulator setup are in [`tailscale/`](tailscale/).
+>
+> - **Start here:** [the quick start](tailscale/QUICKSTART.md)
+> - [Design notes](tailscale/README.md), [changelog](tailscale/CHANGELOG.md) and
+>   [releases](https://github.com/almostunix/firmware/releases)
+> - Credits and licences: [NOTICE](tailscale/NOTICE.md)
 
 <div align="center" markdown="1">
 

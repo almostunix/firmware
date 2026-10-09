@@ -4,9 +4,9 @@ This branch serves Meshtastic's normal TCP phone API (port 4403) on the node's t
 [tailscale-rs](https://github.com/tailscale/tailscale-rs) through its `ts_ffi` C API. There is no port
 forwarding and no public broker, and the LAN API keeps working alongside it.
 
-- **Setting up a node:** [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md)
-- **What changed in each version, with results from the board:** [TAILSCALE-CHANGELOG.md](TAILSCALE-CHANGELOG.md)
-- **Credits, licences and trademarks:** [NOTICE-TAILSCALE.md](NOTICE-TAILSCALE.md)
+- **Setting up a node:** [QUICKSTART.md](QUICKSTART.md)
+- **What changed in each version, with results from the board:** [CHANGELOG.md](CHANGELOG.md)
+- **Credits, licences and trademarks:** [NOTICE.md](NOTICE.md)
 
 This file describes how the code works now. The history of how it got here is in the changelog and in
 the commit messages.
@@ -50,13 +50,13 @@ the LAN.
 | `src/FSPath.h` | Path checks that keep the node's Tailscale secrets unreadable |
 | `tailscale-rs/` | Git submodule: the tailscale-rs commit this firmware needs |
 | `extra_scripts/tailscale_link.py` | Finds that checkout, adds `tailscale.h`, links `libtailscalers.a` |
+| `tailscale/` | These notes, the quick start, the changelog, the example config, and the Wokwi setup |
 
 The Tailscale code is behind `MESHTASTIC_TAILSCALE`, and hooks into Meshtastic at startup (`main.cpp`,
 `WiFiAPClient.cpp`) and in the template instances. Rust's ESP-IDF support needs ESP-IDF 5, so every
 Heltec V4 build on this branch moves from Arduino 2 (ESP-IDF 4.4) to Arduino 3.3 (ESP-IDF 5.5). That
 needed the battery ADC port (`Power.cpp`) and the Bluetooth and watchdog changes in `main-esp32.cpp`;
-other boards are unaffected. [NOTICE-TAILSCALE.md](NOTICE-TAILSCALE.md) lists every upstream file
-changed.
+other boards are unaffected. [NOTICE.md](NOTICE.md) lists every upstream file changed.
 
 ## How the socket shim works
 
@@ -166,7 +166,7 @@ cd tailscale-rs && cargo test
 pio test -e native-macos-tailscale -f test_tailscale_shim -f test_fspath
 
 # A native tailnet node, and the same under ThreadSanitizer
-pio run -e native-macos-tailscale                 # key: tailscale.conf (see tailscale.conf.example)
+pio run -e native-macos-tailscale                 # key: tailscale.conf (see tailscale/tailscale.conf.example)
 pio run -e native-macos-tailscale-tsan
 ```
 
@@ -182,13 +182,14 @@ Tools in `bin/`:
 
 ### The Wokwi simulator
 
-`heltec-v4-tailscale-wokwi` boots the firmware in [Wokwi](https://wokwi.com) (`bin/wokwi-run.sh`).
-It is useful for boot, memory and threading problems, not for timing: its CPU runs well below real
-speed, crypto far slower, and the free plan stops a run after 5 minutes. Wokwi's gateway sees all
-traffic, so use a throwaway tailnet and an ephemeral key, and never a board's key
-(`bin/wokwi-run.sh` refuses one written with `ts-set-secret.sh tailscale-hw`). Build the filesystem
-image with `-t buildfs` rather than by hand: a mismatched LittleFS image is silently reformatted.
-Espressif's QEMU does not boot Meshtastic's ESP32-S3 firmware (bootloader PSRAM init stalls).
+`heltec-v4-tailscale-wokwi` boots the firmware in [Wokwi](https://wokwi.com) (`bin/wokwi-run.sh`; its
+config and scenarios are in `tailscale/wokwi/`). It is useful for boot, memory and threading problems,
+not for timing: its CPU runs well below real speed, crypto far slower, and the free plan stops a run
+after 5 minutes. Wokwi's gateway sees all traffic, so use a throwaway tailnet and an ephemeral key, and
+never a board's key (`bin/wokwi-run.sh` refuses one written with `ts-set-secret.sh tailscale-hw`). Build
+the filesystem image with `-t buildfs` rather than by hand: a mismatched LittleFS image is silently
+reformatted. Espressif's QEMU does not boot Meshtastic's ESP32-S3 firmware (bootloader PSRAM init
+stalls).
 
 ## Known gaps
 

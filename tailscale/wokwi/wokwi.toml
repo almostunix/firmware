@@ -2,6 +2,6 @@
 # diagram.json uses an ESP32-S3 devkit (Wokwi has no Heltec model) with the V4's 16 MB flash and 2 MB PSRAM.
 [wokwi]
 version = 1
-firmware = ".pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.bin"
+firmware = "../../.pio/build/heltec-v4-tailscale-wokwi/wokwi/firmware.bin"
 
 # No `elf =`: the 51 MB ELF would be uploaded every run. Pass --elf for symbolised backtraces.

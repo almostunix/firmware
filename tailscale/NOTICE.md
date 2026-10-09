@@ -25,7 +25,7 @@ here only to describe what the software works with, not as the name of this bran
 
 ## Licences
 
-- **Meshtastic firmware:** GNU General Public License v3.0 (see [LICENSE](LICENSE)). The changes on this
+- **Meshtastic firmware:** GNU General Public License v3.0 (see [LICENSE](../LICENSE)). The changes on this
   branch are released under the same licence.
 - **tailscale-rs:** BSD 3-Clause License, plus Tailscale's additional patent grant (`LICENSE` and
   `PATENTS` in the tailscale-rs repository). The changes on its `heltec-v4` branch are released under the
@@ -38,9 +38,9 @@ here only to describe what the software works with, not as the name of this bran
 
 If you distribute firmware binaries built from this branch, the GPL requires you to offer the
 corresponding source: this branch at the commit you built, the tailscale-rs commit its submodule pins,
-and the build steps in [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md).
+and the build steps in [QUICKSTART.md](QUICKSTART.md).
 
-## What was changed (2026-09-21 to 2026-09-28)
+## What was changed (2026-09-21 to 2026-10-09)
 
 **Added to Meshtastic:**
 - Tailscale transport: `src/mesh/api/Tailscale*` (server API, socket shim, mbedTLS verifier)
@@ -48,9 +48,9 @@ and the build steps in [TAILSCALE-QUICKSTART.md](TAILSCALE-QUICKSTART.md).
 - Path checks: `src/FSPath.h`
 - Tests: `test/test_fspath`, `test/test_tailscale_shim`
 - The `tailscale-rs` submodule
-- Scripts and simulator setup: `bin/` (Tailscale, Wokwi and benchmark scripts), `extra_scripts/`,
-  `wokwi*`, `diagram.json`, `partition-table-wokwi.csv`, `tailscale.conf.example`
-- Docs: `TAILSCALE.md`, `TAILSCALE-QUICKSTART.md`, `TAILSCALE-CHANGELOG.md`, this file
+- Scripts: `bin/` (Tailscale, Wokwi and benchmark scripts), `extra_scripts/`
+- `tailscale/`: the docs (this file among them), `tailscale.conf.example`, and the Wokwi simulator
+  setup in `tailscale/wokwi/`
 
 **Modified in Meshtastic:** `.gitignore`, `.gitmodules`, `README.md`, `src/Power.cpp` and `src/power.h` (battery ADC on
 the ESP-IDF 5 driver), `src/main.cpp`, `src/mesh/InterfacesTemplates.cpp`, `src/mesh/PhoneAPI.cpp`,

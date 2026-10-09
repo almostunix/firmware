@@ -6,7 +6,7 @@ serves the normal Meshtastic phone API on its tailnet address, port 4403. You ca
 on your tailnet with no port forwarding. The LAN API, LoRa and (with WiFi off) Bluetooth work as usual.
 
 It is not affiliated with or endorsed by the Meshtastic project, Meshtastic LLC or Tailscale Inc. See
-[NOTICE-TAILSCALE.md](NOTICE-TAILSCALE.md) for credits and licences, and [TAILSCALE.md](TAILSCALE.md)
+[NOTICE.md](NOTICE.md) for credits and licences, and the [design notes](README.md)
 for the engineering notes.
 
 **Tested on:** Heltec WiFi LoRa 32 V4 (ESP32-S3, 16 MB flash, 2 MB PSRAM) only.
@@ -124,4 +124,4 @@ new key.
   tailnet, the LAN address, or USB.
 - **Secrets stay on the node.** The Meshtastic API and the web server refuse to serve, list or overwrite
   `/prefs/tailscale.conf` and the node's Tailscale keys.
-- **Unit tests:** see "Building and testing" in [TAILSCALE.md](TAILSCALE.md).
+- **Unit tests:** see "Building and testing" in the [design notes](README.md#building-and-testing).
